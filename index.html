@@ -26,13 +26,13 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7);}
 <script>
 /* ===================== DONNÉES INITIALES ===================== */
 const INIT_ACCOUNTS=[
-  {id:'sg',      name:'SG',          bal:0, color:'#ef4444', abbr:'SG'},
-  {id:'hello',   name:'Hello Bank',  bal:0, color:'#3b82f6', abbr:'HB'},
-  {id:'livretA', name:'Livret A',    bal:0, color:'#10b981', abbr:'LA'},
-  {id:'ldds',    name:'LDDS',        bal:0, color:'#059669', abbr:'LD'},
-  {id:'assVie',  name:'Ass. Vie',    bal:0, color:'#0d9488', abbr:'AV'},
-  {id:'wise',    name:'WISE',        bal:0, color:'#7c3aed', abbr:'WI'},
-  {id:'liquide', name:'Liquide',     bal:0, color:'#f97316', abbr:'LQ'},
+  {id:'sg',      name:'SG',          bal:0, color:'#ef4444', abbr:'SG',  isSavings:false},
+  {id:'hello',   name:'Hello Bank',  bal:0, color:'#3b82f6', abbr:'HB',  isSavings:false},
+  {id:'livretA', name:'Livret A',    bal:0, color:'#10b981', abbr:'LA',  isSavings:true},
+  {id:'ldds',    name:'LDDS',        bal:0, color:'#059669', abbr:'LD',  isSavings:true},
+  {id:'assVie',  name:'Ass. Vie',    bal:0, color:'#0d9488', abbr:'AV',  isSavings:true},
+  {id:'wise',    name:'WISE',        bal:0, color:'#7c3aed', abbr:'WI',  isSavings:false},
+  {id:'liquide', name:'Liquide',     bal:0, color:'#f97316', abbr:'LQ',  isSavings:false},
 ];
 const INIT_ENVELOPES=[
   {id:'epargne', name:'Épargne',        bal:0, rate:0.55, color:'#10b981'},
@@ -54,7 +54,9 @@ const TYPES=[
   {id:'pret',label:'Prêt donné',abbr:'PRT',dir:'out',env:null,color:'#dc2626'},
   {id:'rembRecv',label:'Rbst reçu',abbr:'RBT',dir:'in',env:null,color:'#16a34a'},
   {id:'benef',label:'Bénéfice',abbr:'BNF',dir:'in',env:null,color:'#06b6d4'},
-  {id:'perte',label:'Perte',abbr:'PER',dir:'out',env:null,color:'#78716c'},
+  {id:'perte',     label:'Perte',        abbr:'PER', dir:'out', env:null, color:'#78716c'},
+  {id:'emprunt',   label:'Emprunt reçu', abbr:'EMP', dir:'in',  env:null, color:'#f97316'},
+  {id:'rembDonne', label:'Rembt à faire', abbr:'RMB', dir:'out', env:null, color:'#dc2626'},
 ];
 
 /* ===================== COULEURS ===================== */
@@ -65,18 +67,21 @@ const eur=n=>{const neg=n<0,abs=Math.abs(n);return(neg?'−':'')+abs.toLocaleStr
 const short=n=>{const neg=n<0,abs=Math.abs(n);return(neg?'−':'')+(abs>=1000?(abs/1000).toFixed(1)+'k':abs.toFixed(0))+'€';};
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const todayStr=()=>new Date().toISOString().split('T')[0];
-const DKEY='jf_data_v3',SKEY='jf_settings_v1';
+const DKEY='jf_data_v3',SKEY='jf_settings_v1',SETUP_KEY='jf_setup_done';
+const PALETTE=['#ef4444','#f97316','#f59e0b','#10b981','#059669','#0d9488',
+  '#3b82f6','#6366f1','#7c3aed','#ec4899','#64748b','#0ea5e9'];
 
 /* ===================== PERSISTANCE ===================== */
 const loadData=()=>{try{const r=localStorage.getItem(DKEY);return r?JSON.parse(r):null;}catch{return null;}};
 const saveData=d=>{try{localStorage.setItem(DKEY,JSON.stringify(d));}catch{}};
-const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEnabled:false,notifTime:'20:00',notifEmail:'',emailReminder:false,emailTime:'08:00',lastNotifDate:''};}};
+const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEnabled:false,notifTime:'20:00',notifEmail:'',emailReminder:false,emailTime:'08:00',lastNotifDate:'',userName:''};}};
 const saveSettings=s=>{try{localStorage.setItem(SKEY,JSON.stringify(s));}catch{}};
 
 /* ===================== ÉTAT ===================== */
 let state={
   tab:'home',
-  accounts:INIT_ACCOUNTS,envelopes:INIT_ENVELOPES,txs:[],debts:INIT_DEBTS,
+  wizard:null,
+  accounts:INIT_ACCOUNTS,envelopes:INIT_ENVELOPES,txs:[],debts:INIT_DEBTS,owedDebts:[],
   addForm:{typeId:'depense',amt:'',accId:'hello',fromId:'sg',toId:'hello',desc:'',person:'',date:todayStr()},
   histFilter:'all',
   debtModal:null,debtAdding:false,debtForm:{np:'',na:'',nn:''},
@@ -98,18 +103,36 @@ function setState(patch,rerender=true){
   if(rerender){render();persist();}else{persist();}
 }
 function persist(){
-  saveData({accounts:state.accounts,envelopes:state.envelopes,txs:state.txs,debts:state.debts});
+  saveData({accounts:state.accounts,envelopes:state.envelopes,txs:state.txs,debts:state.debts,owedDebts:state.owedDebts});
 }
 
 function init(){
   const saved=loadData();
   if(saved){
-    if(saved.accounts)state.accounts=saved.accounts;
+    if(saved.accounts)state.accounts=saved.accounts.map(a=>({...a,isSavings:a.isSavings===true}));
     if(saved.envelopes)state.envelopes=saved.envelopes;
     if(saved.txs)state.txs=saved.txs;
     if(saved.debts)state.debts=saved.debts;
+    if(saved.owedDebts)state.owedDebts=saved.owedDebts;
   }
   state.settings=loadSettings();
+  // Détecter premier lancement
+  const setupDone=localStorage.getItem(SETUP_KEY);
+  if(!setupDone){
+    state.wizard={step:0,
+      name:'',
+      accounts:[
+        {id:uid(),name:'',bal:'0',color:'#3b82f6'},
+      ],
+      envelopes:[
+        {id:uid(),name:'Épargne',rate:'55',color:'#10b981'},
+        {id:uid(),name:'Arg. de poche',rate:'25',color:'#3b82f6'},
+        {id:uid(),name:'Dîme',rate:'10',color:'#f59e0b'},
+        {id:uid(),name:'Aide',rate:'5',color:'#ec4899'},
+        {id:uid(),name:'Loisir',rate:'5',color:'#8b5cf6'},
+      ]
+    };
+  }
   render();
   if(state.settings.autoSync&&state.settings.driveUrl)checkAutoSync();
 }
@@ -154,6 +177,30 @@ function sendTestNotif(){
     requireInteraction:false
   });
   showToast('Notification test envoyée',true);
+}
+
+/* ===================== REMBOURSER MA DETTE ===================== */
+function repayOwed(did,amt,accId,note){
+  amt=parseFloat(String(amt).replace(',','.'))||0;
+  if(amt<=0){showToast('Montant invalide',false);return;}
+  const d=state.owedDebts.find(x=>x.id===did);
+  if(!d)return;
+  // Surpaiement
+  if(amt>d.rem){
+    const surplus=+(amt-d.rem).toFixed(2);
+    setState({owedModal:{...d,_overpay:{amt,accId,note,surplus}}});
+    return;
+  }
+  const realAmt=+(Math.min(amt,d.rem)).toFixed(2);
+  const entry={id:uid(),amount:realAmt,date:todayStr(),note:note||''};
+  state.owedDebts=state.owedDebts.map(x=>x.id===did
+    ?{...x,rem:Math.max(0,+(x.rem-realAmt).toFixed(2)),history:[...(x.history||[]),entry]}:x);
+  state.accounts=state.accounts.map(a=>a.id===accId?{...a,bal:+(a.bal-realAmt).toFixed(2)}:a);
+  state.txs=[{id:uid(),typeId:'rembDonne',amount:realAmt,accId,person:d.creditor,
+    desc:(note?note+' — ':'')+'Remboursement à '+d.creditor,
+    date:todayStr(),createdAt:new Date().toISOString()},...state.txs];
+  setState({owedModal:null});
+  showToast('Remboursement de '+eur(realAmt)+' enregistré ✓',true);
 }
 
 /* ===================== RESET À ZÉRO ===================== */
@@ -240,15 +287,94 @@ function addTx(f){
   const amt=parseFloat(f.amt.replace(',','.'))||0;
   if(amt<=0){showToast('Montant invalide',false);return;}
   if(tp.dir==='xfr'&&f.fromId===f.toId){showToast('Comptes identiques',false);return;}
+  if(f.typeId==='rembRecv'&&!f.person.trim()){showToast('Sélectionne la personne qui rembourse',false);return;}
+  if(f.typeId==='rembDonne'&&!f.person.trim()){showToast('Sélectionne le créancier à rembourser',false);return;}
   const tx={id:uid(),typeId:f.typeId,amount:amt,accId:tp.dir==='xfr'?null:f.accId,fromId:tp.dir==='xfr'?f.fromId:null,toId:tp.dir==='xfr'?f.toId:null,desc:f.desc.trim(),person:f.person.trim(),date:f.date,createdAt:new Date().toISOString()};
   state.txs=[tx,...state.txs];
   if(tp.dir==='in'){
     state.accounts=state.accounts.map(a=>a.id===f.accId?{...a,bal:+(a.bal+amt).toFixed(2)}:a);
     if(tp.env==='auto')state.envelopes=state.envelopes.map(e=>({...e,bal:+(e.bal+amt*e.rate).toFixed(2)}));
+    // Emprunt reçu → créer/mettre à jour ma dette
+    if(f.typeId==='emprunt'&&f.person.trim()){
+      const cName=f.person.trim();
+      const existing=state.owedDebts.find(d=>d.creditor.toLowerCase()===cName.toLowerCase()&&d.rem>0);
+      if(existing){
+        state.owedDebts=state.owedDebts.map(d=>d.id===existing.id
+          ?{...d,total:+(d.total+amt).toFixed(2),rem:+(d.rem+amt).toFixed(2),
+            note:d.note?(d.note+' | '+f.desc.trim()):f.desc.trim()}
+          :d);
+      }else{
+        state.owedDebts=[{id:uid(),creditor:cName,total:amt,rem:amt,
+          note:f.desc.trim(),history:[]},...state.owedDebts];
+      }
+    }
+    // Si remboursement reçu → mettre à jour la dette correspondante
+    if(f.typeId==='rembRecv'&&f.person.trim()){
+      const pName=f.person.trim();
+      const debtMatch=state.debts.find(d=>
+        d.person.toLowerCase()===pName.toLowerCase()&&d.rem>0
+      );
+      if(debtMatch){
+        // Surpaiement depuis onglet Saisir → avertissement toast + plafonnement auto
+        if(amt>debtMatch.rem){
+          const surplus=+(amt-debtMatch.rem).toFixed(2);
+          // On enregistre le surplus comme bénéfice séparé automatiquement
+          state.accounts=state.accounts.map(a=>a.id===f.accId?{...a,bal:+(a.bal+surplus).toFixed(2)}:a);
+          state.txs=[{id:uid(),typeId:'benef',amount:surplus,accId:f.accId,person:pName,
+            desc:'Surplus remboursement '+pName,date:f.date||todayStr(),
+            createdAt:new Date().toISOString()},...state.txs];
+          const entry={id:uid(),amount:debtMatch.rem,date:f.date||todayStr(),note:f.desc.trim()};
+          state.debts=state.debts.map(d=>d.id===debtMatch.id
+            ?{...d,rem:0,history:[...(d.history||[]),entry]}:d);
+          showToast('Dette soldée + '+eur(surplus)+' en bénéfice ✓',true,4000);
+          setState({addForm:{...state.addForm,amt:'',desc:'',person:'',date:todayStr()}});
+          if(state.settings.autoSync&&state.settings.driveUrl)setTimeout(()=>syncToDrive(),1000);
+          return;
+        }
+        const entry={id:uid(),amount:amt,date:f.date||todayStr(),note:f.desc.trim()};
+        state.debts=state.debts.map(d=>d.id===debtMatch.id
+          ?{...d,rem:Math.max(0,+(d.rem-amt).toFixed(2)),history:[...(d.history||[]),entry]}:d);
+      }
+    }
   }else if(tp.dir==='out'){
     state.accounts=state.accounts.map(a=>a.id===f.accId?{...a,bal:+(a.bal-amt).toFixed(2)}:a);
     if(tp.env&&tp.env!=='auto')state.envelopes=state.envelopes.map(e=>e.id===tp.env?{...e,bal:+(e.bal-amt).toFixed(2)}:e);
-    if(f.typeId==='pret'&&f.person.trim())state.debts=[{id:uid(),person:f.person.trim(),total:amt,rem:amt,note:f.desc.trim()},...state.debts];
+    if(f.typeId==='pret'&&f.person.trim()){
+      const pName=f.person.trim();
+      const existing=state.debts.find(d=>d.person.toLowerCase()===pName.toLowerCase()&&d.rem>0);
+      if(existing){
+        // Ajoute au prêt existant
+        state.debts=state.debts.map(d=>d.id===existing.id
+          ?{...d,total:+(d.total+amt).toFixed(2),rem:+(d.rem+amt).toFixed(2),
+            note:d.note?(d.note+' | '+f.desc.trim()):f.desc.trim()}
+          :d);
+      }else{
+        state.debts=[{id:uid(),person:pName,total:amt,rem:amt,note:f.desc.trim(),history:[]},...state.debts];
+      }
+    }
+    // Remboursement que je fais → mettre à jour ma dette
+    if(f.typeId==='rembDonne'&&f.person.trim()){
+      const cName=f.person.trim();
+      const debtMatch=state.owedDebts.find(d=>d.creditor.toLowerCase()===cName.toLowerCase()&&d.rem>0);
+      if(debtMatch){
+        if(amt>debtMatch.rem){
+          // Surpaiement : plafonner + avertir
+          const realAmt=debtMatch.rem;
+          const surplus=+(amt-realAmt).toFixed(2);
+          // Rembourse seulement ce qui reste
+          state.accounts=state.accounts.map(a=>a.id===f.accId?{...a,bal:+(a.bal+surplus).toFixed(2)}:a);
+          const entry={id:uid(),amount:realAmt,date:f.date||todayStr(),note:f.desc.trim()};
+          state.owedDebts=state.owedDebts.map(d=>d.id===debtMatch.id
+            ?{...d,rem:0,history:[...(d.history||[]),entry]}:d);
+          showToast('Dette soldée. Surplus '+eur(surplus)+' recrédité ✓',true,4000);
+          setState({addForm:{...state.addForm,amt:'',desc:'',person:'',date:todayStr()}});
+          return;
+        }
+        const entry={id:uid(),amount:amt,date:f.date||todayStr(),note:f.desc.trim()};
+        state.owedDebts=state.owedDebts.map(d=>d.id===debtMatch.id
+          ?{...d,rem:Math.max(0,+(d.rem-amt).toFixed(2)),history:[...(d.history||[]),entry]}:d);
+      }
+    }
   }else if(tp.dir==='xfr'){
     state.accounts=state.accounts.map(a=>{if(a.id===f.fromId)return{...a,bal:+(a.bal-amt).toFixed(2)};if(a.id===f.toId)return{...a,bal:+(a.bal+amt).toFixed(2)};return a;});
   }
@@ -257,16 +383,48 @@ function addTx(f){
   if(state.settings.autoSync&&state.settings.driveUrl)setTimeout(()=>syncToDrive(),1000);
 }
 
-function repayDebt(did,amtStr,accId){
-  const amt=parseFloat(amtStr.replace(',','.'))||0;
+function repayDebt(did,amtStr,accId,note,forceMode){
+  const amt=parseFloat((amtStr||'').replace(',','.'))||0;
   if(amt<=0){showToast('Montant invalide',false);return;}
   const d=state.debts.find(x=>x.id===did);
   if(!d)return;
-  state.debts=state.debts.map(x=>x.id===did?{...x,rem:Math.max(0,+(x.rem-amt).toFixed(2))}:x);
-  state.accounts=state.accounts.map(a=>a.id===accId?{...a,bal:+(a.bal+amt).toFixed(2)}:a);
-  state.txs=[{id:uid(),typeId:'rembRecv',amount:amt,accId,person:d.person,desc:'Remboursement '+d.person,date:todayStr(),createdAt:new Date().toISOString()},...state.txs];
+
+  // Surpaiement détecté
+  if(amt>d.rem&&!forceMode){
+    const surplus=+(amt-d.rem).toFixed(2);
+    setState({debtModal:{...d,_overpay:{amt,accId,note,surplus}}});
+    return;
+  }
+
+  // forceMode='cap' → plafonner à d.rem | forceMode='full' → accepter le surplus comme bénéfice
+  const realAmt = forceMode==='cap' ? d.rem : amt;
+  const surplusAmt = forceMode==='full' ? +(amt-d.rem).toFixed(2) : 0;
+
+  const entry={id:uid(),amount:realAmt,date:todayStr(),note:note||''};
+  state.debts=state.debts.map(x=>x.id===did
+    ?{...x,rem:Math.max(0,+(x.rem-realAmt).toFixed(2)),
+      history:[...(x.history||[]),entry]}
+    :x);
+  state.accounts=state.accounts.map(a=>a.id===accId?{...a,bal:+(a.bal+realAmt).toFixed(2)}:a);
+  state.txs=[{id:uid(),typeId:'rembRecv',amount:realAmt,accId,person:d.person,
+    desc:(note?note+' — ':'')+'Remboursement '+d.person,date:todayStr(),
+    createdAt:new Date().toISOString()},...state.txs];
+
+  // Si surplus accepté → enregistrer comme bénéfice séparé
+  if(surplusAmt>0){
+    state.accounts=state.accounts.map(a=>a.id===accId?{...a,bal:+(a.bal+surplusAmt).toFixed(2)}:a);
+    state.txs=[{id:uid(),typeId:'benef',amount:surplusAmt,accId,person:d.person,
+      desc:'Surplus remboursement '+d.person,date:todayStr(),
+      createdAt:new Date().toISOString()},...state.txs];
+  }
+
   setState({debtModal:null});
-  showToast('Remboursement enregistré ✓',true);
+  showToast(forceMode==='cap'
+    ? 'Plafonné à '+eur(realAmt)+' (dette soldée) ✓'
+    : forceMode==='full'
+      ? 'Remboursement enregistré + '+eur(surplusAmt)+' en bénéfice ✓'
+      : 'Remboursement enregistré ✓',
+    true);
 }
 
 /* ===================== CONSTRUCTEUR DOM ===================== */
@@ -318,12 +476,327 @@ function mkToggle(active, onclick){
   return wrap;
 }
 
+
+/* ===================== WIZARD PREMIER LANCEMENT ===================== */
+function finishWizard(){
+  const wz=state.wizard;
+  // Appliquer nom utilisateur
+  const ns={...state.settings,userName:wz.name.trim()||'Utilisateur'};
+  state.settings=ns;saveSettings(ns);
+  // Appliquer comptes (filtrer ceux avec un nom)
+  const validAccounts=wz.accounts.filter(a=>a.name.trim()).map(a=>({
+    id:a.id,
+    name:a.name.trim(),
+    bal:parseFloat(String(a.bal).replace(',','.'))||0,
+    color:a.color,
+    abbr:a.name.trim().slice(0,2).toUpperCase(),
+    isSavings:a.isSavings||false
+  }));
+  if(validAccounts.length>0)state.accounts=validAccounts;
+  // Appliquer enveloppes
+  const validEnv=wz.envelopes.filter(e=>e.name.trim()&&parseFloat(e.rate)>0).map(e=>({
+    id:e.id,name:e.name.trim(),bal:0,
+    rate:parseFloat(e.rate)/100,color:e.color
+  }));
+  if(validEnv.length>0)state.envelopes=validEnv;
+  localStorage.setItem(SETUP_KEY,'1');
+  setState({wizard:null});
+}
+
+function renderWizard(){
+  const wz=state.wizard;
+  const totalRate=wz.envelopes.reduce((s,e)=>s+(parseFloat(e.rate)||0),0);
+  const rateOk=Math.abs(totalRate-100)<0.01;
+  const W=el('div',{style:{height:'100%',display:'flex',flexDirection:'column',
+    background:BG,color:TXT,fontFamily:'inherit'}});
+
+  // Header avec étapes
+  const hdr=el('div',{style:{padding:'20px 16px 0'}});
+  hdr.appendChild(el('div',{style:{fontSize:20,fontWeight:800,color:'#60a5fa',marginBottom:14}},'Journal Financier'));
+  // Indicateur étapes
+  const steps=el('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:20}});
+  ['Profil','Comptes','Enveloppes'].forEach((label,i)=>{
+    const active=wz.step===i, done=wz.step>i;
+    const dot=el('div',{style:{width:28,height:28,borderRadius:14,
+      background:done?'#10b981':active?'#3b82f6':'#334155',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      fontSize:11,fontWeight:800,color:'white',flexShrink:0}},done?'✓':(i+1)+'');
+    steps.appendChild(dot);
+    // Ligne de connexion entre étapes (déclarée avant usage)
+    let stepLine=null;
+    if(i<2){
+      stepLine=el('div',{style:{flex:1,height:2,
+        background:done?'#10b981':'#334155',borderRadius:1}});
+      steps.appendChild(stepLine);
+    }
+    const lb=el('div',{style:{fontSize:9,color:active?'#60a5fa':done?'#10b981':MUT,
+      fontWeight:active?700:400,marginTop:3,textAlign:'center'}},label);
+    // Réorganiser : mettre dot et label dans une colonne
+    steps.removeChild(dot);
+    if(stepLine)steps.removeChild(stepLine);
+    const col=el('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',gap:3,flexShrink:0}});
+    col.appendChild(dot);col.appendChild(lb);steps.appendChild(col);
+    if(stepLine)steps.appendChild(stepLine);
+  });
+  hdr.appendChild(steps);
+  W.appendChild(hdr);
+
+  // Corps scrollable
+  const body=el('div',{style:{flex:1,overflowY:'auto',padding:'0 16px 16px',scrollbarWidth:'none'}});
+
+  // ─── ÉTAPE 0 : Profil ───
+  if(wz.step===0){
+    body.appendChild(el('div',{style:{fontSize:16,fontWeight:700,marginBottom:4}},'Bienvenue !'));
+    body.appendChild(el('div',{style:{fontSize:13,color:MUT,marginBottom:20,lineHeight:1.6}},'Configurer l\u2019app prend 2 minutes. Tu pourras modifier tout ça plus tard dans les Réglages.'));
+    body.appendChild(el('div',{style:{fontSize:14,fontWeight:600,marginBottom:8}},'Comment tu t\u2019appelles ?'));
+    const nameInp=el('input',{type:'text',placeholder:'Ton prénom...',
+      style:{width:'100%',background:CARD,border:'1px solid '+BORDER,borderRadius:10,
+        padding:'13px',color:TXT,fontSize:16,outline:'none',marginBottom:20}});
+    nameInp.value=wz.name||'';
+    nameInp.addEventListener('input',e=>{state.wizard={...state.wizard,name:e.target.value};});
+    body.appendChild(nameInp);
+    setTimeout(()=>nameInp.focus(),100);
+  }
+
+  // ─── ÉTAPE 1 : Comptes ───
+  if(wz.step===1){
+    body.appendChild(el('div',{style:{fontSize:16,fontWeight:700,marginBottom:4}},'Tes comptes bancaires'));
+    body.appendChild(el('div',{style:{fontSize:12,color:MUT,marginBottom:14,lineHeight:1.5}},'Ajoute tes comptes avec leur solde actuel. Tu peux en ajouter/supprimer plus tard.'));
+    wz.accounts.forEach((acc,i)=>{
+      const card=el('div',{style:{background:CARD,borderRadius:12,padding:'12px',
+        border:'1px solid '+BORDER,marginBottom:10}});
+      // Couleur + nom
+      const topRow=el('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:8}});
+      // Sélecteur couleur
+      const colBtn=el('div',{style:{width:36,height:36,borderRadius:9,
+        background:acc.color,cursor:'pointer',flexShrink:0,border:'2px solid white',
+        display:'flex',alignItems:'center',justifyContent:'center'}});
+      const colPicker=el('div',{style:{display:'none',position:'absolute',
+        background:'#1e293b',borderRadius:10,padding:'8px',
+        border:'1px solid '+BORDER,zIndex:100,flexWrap:'wrap',
+        gap:6,width:160}});
+      PALETTE.forEach(c=>{
+        const dot=el('div',{style:{width:26,height:26,borderRadius:7,background:c,
+          cursor:'pointer',border:c===acc.color?'2px solid white':'2px solid transparent'}});
+        dot.addEventListener('click',()=>{
+          const na=state.wizard.accounts.map((a,j)=>j===i?{...a,color:c}:a);
+          state.wizard={...state.wizard,accounts:na};
+          colPicker.style.display='none';render();
+        });
+        colPicker.appendChild(dot);
+      });
+      colBtn.addEventListener('click',e=>{
+        e.stopPropagation();
+        colPicker.style.display=colPicker.style.display==='none'?'flex':'none';
+      });
+      document.addEventListener('click',()=>{colPicker.style.display='none';},{once:true});
+      topRow.appendChild(colBtn);
+      topRow.appendChild(colPicker);
+      const nameInp=el('input',{type:'text',placeholder:'Nom du compte (ex: SG, Livret A...)',
+        style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+          padding:'9px 11px',color:TXT,fontSize:14,outline:'none'}});
+      nameInp.value=acc.name;
+      nameInp.addEventListener('input',e=>{
+        const na=state.wizard.accounts.map((a,j)=>j===i
+          ?{...a,name:e.target.value,abbr:e.target.value.slice(0,2).toUpperCase()}:a);
+        state.wizard={...state.wizard,accounts:na};
+      });
+      topRow.appendChild(nameInp);
+      if(wz.accounts.length>1){
+        const del=el('button',{style:{background:'none',border:'none',color:MUT,
+          fontSize:16,cursor:'pointer',padding:'4px 6px',flexShrink:0}},'✕');
+        del.addEventListener('click',()=>{
+          const na=state.wizard.accounts.filter((_,j)=>j!==i);
+          state.wizard={...state.wizard,accounts:na};render();
+        });
+        topRow.appendChild(del);
+      }
+      card.appendChild(topRow);
+      // Solde initial
+      const balRow=el('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:8}});
+      balRow.appendChild(el('div',{style:{fontSize:11,color:MUT,whiteSpace:'nowrap'}},'Solde actuel :'));
+      const balInp=el('input',{type:'number',inputMode:'decimal',placeholder:'0.00',
+        style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+          padding:'9px 11px',color:TXT,fontSize:14,outline:'none'}});
+      balInp.value=acc.bal;
+      balInp.addEventListener('input',e=>{
+        const na=state.wizard.accounts.map((a,j)=>j===i?{...a,bal:e.target.value}:a);
+        state.wizard={...state.wizard,accounts:na};
+      });
+      balRow.appendChild(balInp);
+      balRow.appendChild(el('span',{style:{fontSize:13,color:MUT}},'€'));
+      card.appendChild(balRow);
+      // Toggle épargne
+      const savRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
+      savRow.appendChild(el('div',null,[
+        el('div',{style:{fontSize:12,color:TXT}},'Compte épargne'),
+        el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Comptabilisé dans le total Épargne')
+      ]));
+      const savTog=mkToggle(acc.isSavings===true,()=>{
+        const cur=state.wizard.accounts[i];
+        const na=state.wizard.accounts.map((a,j)=>j===i?{...a,isSavings:!(cur.isSavings===true)}:a);
+        state.wizard={...state.wizard,accounts:na};render();
+      });
+      savRow.appendChild(savTog);
+      card.appendChild(savRow);
+      body.appendChild(card);
+    });
+    // Bouton ajouter
+    const addBtn=el('button',{style:{width:'100%',background:CARD,
+      border:'1px dashed '+BORDER,borderRadius:12,padding:'11px',
+      color:MUT2,fontSize:13,cursor:'pointer',fontFamily:'inherit',marginBottom:8}},
+      '+ Ajouter un compte');
+    addBtn.addEventListener('click',()=>{
+      const cur=state.wizard.accounts;
+      const na=[...cur,{id:uid(),name:'',bal:'0',color:PALETTE[cur.length%PALETTE.length],isSavings:false}];
+      state.wizard={...state.wizard,accounts:na};render();
+    });
+    body.appendChild(addBtn);
+  }
+
+  // ─── ÉTAPE 2 : Enveloppes ───
+  if(wz.step===2){
+    body.appendChild(el('div',{style:{fontSize:16,fontWeight:700,marginBottom:4}},'Répartition de tes revenus'));
+    body.appendChild(el('div',{style:{fontSize:12,color:MUT,marginBottom:10,lineHeight:1.5}},'Définis comment chaque revenu se répartit automatiquement. La somme doit être exactement 100%.'));
+    // Compteur total
+    const totalBox=el('div',{style:{background:rateOk?'#022c22':'#3b1a1a',
+      border:'1px solid '+(rateOk?'#10b981':'#7f1d1d'),
+      borderRadius:10,padding:'9px 14px',display:'flex',
+      justifyContent:'space-between',alignItems:'center',marginBottom:12}});
+    totalBox.appendChild(el('div',{style:{fontSize:12,color:MUT}},
+      rateOk?'✓ Répartition valide':'Total actuel'));
+    totalBox.appendChild(el('div',{style:{fontSize:20,fontWeight:800,
+      color:rateOk?'#34d399':'#f87171'}},totalRate.toFixed(1)+'%'));
+    body.appendChild(totalBox);
+    wz.envelopes.forEach((env,i)=>{
+      const card=el('div',{style:{background:CARD,borderRadius:12,padding:'12px',
+        border:'1px solid '+BORDER,marginBottom:8}});
+      const topRow=el('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:8}});
+      // Dot couleur
+      const colDot=el('div',{style:{width:14,height:14,borderRadius:7,
+        background:env.color,flexShrink:0,cursor:'pointer'}});
+      let cIdx=PALETTE.indexOf(env.color);
+      colDot.addEventListener('click',()=>{
+        cIdx=(cIdx+1)%PALETTE.length;
+        const ne=state.wizard.envelopes.map((e,j)=>j===i?{...e,color:PALETTE[cIdx]}:e);
+        state.wizard={...state.wizard,envelopes:ne};render();
+      });
+      topRow.appendChild(colDot);
+      const nameInp=el('input',{type:'text',placeholder:'Nom de l\u2019enveloppe...',
+        style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+          padding:'8px 11px',color:TXT,fontSize:14,outline:'none'}});
+      nameInp.value=env.name;
+      nameInp.addEventListener('input',e=>{
+        const ne=state.wizard.envelopes.map((x,j)=>j===i?{...x,name:e.target.value}:x);
+        state.wizard={...state.wizard,envelopes:ne};
+      });
+      topRow.appendChild(nameInp);
+      // Taux
+      const rateInp=el('input',{type:'number',inputMode:'decimal',
+        style:{width:58,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+          padding:'8px',color:TXT,fontSize:14,outline:'none',textAlign:'center'}});
+      rateInp.value=env.rate;
+      rateInp.addEventListener('input',e=>{
+        const ne=state.wizard.envelopes.map((x,j)=>j===i?{...x,rate:e.target.value}:x);
+        state.wizard={...state.wizard,envelopes:ne};
+        // Update total box sans rerender complet
+        const t=ne.reduce((s,x)=>s+(parseFloat(x.rate)||0),0);
+        const ok=Math.abs(t-100)<0.01;
+        totalBox.style.background=ok?'#022c22':'#3b1a1a';
+        totalBox.style.border='1px solid '+(ok?'#10b981':'#7f1d1d');
+        totalBox.lastChild.textContent=t.toFixed(1)+'%';
+        totalBox.lastChild.style.color=ok?'#34d399':'#f87171';
+        totalBox.firstChild.textContent=ok?'✓ Répartition valide':'Total actuel';
+      });
+      topRow.appendChild(el('span',{style:{fontSize:13,color:MUT}},'%'));
+      topRow.appendChild(rateInp);
+      if(wz.envelopes.length>1){
+        const del=el('button',{style:{background:'none',border:'none',
+          color:MUT,fontSize:15,cursor:'pointer',padding:'2px 5px',flexShrink:0}},'✕');
+        del.addEventListener('click',()=>{
+          const ne=state.wizard.envelopes.filter((_,j)=>j!==i);
+          state.wizard={...state.wizard,envelopes:ne};render();
+        });
+        topRow.appendChild(del);
+      }
+      card.appendChild(topRow);
+      body.appendChild(card);
+    });
+    const addEnvBtn=el('button',{style:{width:'100%',background:CARD,
+      border:'1px dashed '+BORDER,borderRadius:12,padding:'11px',
+      color:MUT2,fontSize:13,cursor:'pointer',fontFamily:'inherit',marginBottom:4}},
+      '+ Ajouter une enveloppe');
+    addEnvBtn.addEventListener('click',()=>{
+      const curE=state.wizard.envelopes;
+      const ne=[...curE,{id:uid(),name:'',rate:'0',color:PALETTE[curE.length%PALETTE.length]}];
+      state.wizard={...state.wizard,envelopes:ne};render();
+    });
+    body.appendChild(addEnvBtn);
+  }
+
+  W.appendChild(body);
+
+  // Footer navigation
+  const foot=el('div',{style:{padding:'12px 16px',background:'#1e293b',
+    borderTop:'1px solid '+BORDER,display:'flex',gap:10,
+    paddingBottom:'env(safe-area-inset-bottom)'}});
+  if(wz.step>0){
+    const back=el('button',{style:{flex:1,background:'#334155',color:TXT,
+      border:'none',borderRadius:12,padding:'13px',fontSize:15,fontWeight:700,
+      cursor:'pointer',fontFamily:'inherit'}},'← Retour');
+    back.addEventListener('click',()=>setState({wizard:{...state.wizard,step:state.wizard.step-1}}));
+    foot.appendChild(back);
+  }
+  if(wz.step<2){
+    const next=el('button',{style:{flex:2,background:'#3b82f6',color:'white',
+      border:'none',borderRadius:12,padding:'13px',fontSize:15,fontWeight:700,
+      cursor:'pointer',fontFamily:'inherit'}},
+      state.wizard.step===0?'Suivant : Mes comptes →':'Suivant : Répartition →');
+    next.addEventListener('click',()=>{
+      if(state.wizard.step===0&&!state.wizard.name.trim()){showToast('Entre ton prénom d’abord',false);return;}
+      setState({wizard:{...state.wizard,step:state.wizard.step+1}});
+    });
+    foot.appendChild(next);
+  }else{
+    // Bouton dynamique - recalcule à chaque clic
+    const finish=el('button',{style:{flex:2,
+      background:'#10b981',color:'white',
+      border:'none',borderRadius:12,padding:'13px',fontSize:16,fontWeight:800,
+      cursor:'pointer',fontFamily:'inherit'}},'✓ Commencer');
+    // Met à jour l'apparence selon le taux actuel
+    function updateFinishBtn(){
+      const t=state.wizard.envelopes.reduce((s,e)=>s+(parseFloat(e.rate)||0),0);
+      const ok=Math.abs(t-100)<0.01;
+      finish.style.background=ok?'#10b981':'#334155';
+      finish.style.cursor=ok?'pointer':'default';
+      finish.textContent=ok?'✓ Commencer':'Total doit être 100%';
+    }
+    updateFinishBtn();
+    // Relier aux inputs de taux pour mise à jour en temps réel
+    setTimeout(()=>{
+      document.querySelectorAll('input[type="number"]').forEach(inp=>{
+        inp.addEventListener('input',updateFinishBtn);
+      });
+    },50);
+    finish.addEventListener('click',()=>{
+      const t=state.wizard.envelopes.reduce((s,e)=>s+(parseFloat(e.rate)||0),0);
+      if(Math.abs(t-100)>=0.01){showToast('Le total doit être exactement 100%',false);return;}
+      finishWizard();
+    });
+    foot.appendChild(finish);
+  }
+  W.appendChild(foot);
+  return W;
+}
+
 /* ===================== PAGE ACCUEIL ===================== */
 function renderHome(){
   const {accounts,envelopes,settings,syncStatus}=state;
   const total=accounts.reduce((a,x)=>a+x.bal,0);
-  const access=accounts.filter(x=>['sg','hello','wise','liquide'].includes(x.id)).reduce((a,x)=>a+x.bal,0);
-  const sav=accounts.filter(x=>['livretA','ldds','assVie'].includes(x.id)).reduce((a,x)=>a+x.bal,0);
+  const access=accounts.filter(x=>!x.isSavings).reduce((a,x)=>a+x.bal,0);
+  const sav=accounts.filter(x=>x.isSavings).reduce((a,x)=>a+x.bal,0);
+  const loisirEnv=envelopes.find(e=>e.name.toLowerCase().includes('loisir')||e.id==='loisir');
+  const loisirBal=loisirEnv?loisirEnv.bal:null;
   const wrap=el('div',{style:{paddingBottom:20,color:TXT}});
 
   const hdr=el('div',{style:{padding:'20px 16px 14px'}});
@@ -340,9 +813,15 @@ function renderHome(){
   hdr.appendChild(topRow);
   hdr.appendChild(el('div',{style:{fontSize:36,fontWeight:800,color:total>=0?'#34d399':'#f87171',lineHeight:1.05}},eur(total)));
   hdr.appendChild(el('div',{style:{fontSize:11,color:MUT,marginTop:2}},'Patrimoine total'));
-  const miniRow=el('div',{style:{display:'flex',gap:10,marginTop:12}});
-  [{l:'Accessible',v:access},{l:'Épargne',v:sav}].forEach(x=>{
-    miniRow.appendChild(crd([el('div',{style:{fontSize:11,color:MUT}},x.l),el('div',{style:{fontSize:16,fontWeight:700,color:x.v>=0?TXT:'#f87171',marginTop:3}},short(x.v))],{flex:1,padding:'10px 13px'}));
+  const miniRow=el('div',{style:{display:'flex',gap:8,marginTop:12,overflowX:'auto',WebkitOverflowScrolling:'touch'}});
+  const miniCards=[{l:'Accessible',v:access,c:null},{l:'Épargne',v:sav,c:null}];
+  if(loisirBal!==null)miniCards.push({l:'Loisir',v:loisirBal,c:'#8b5cf6'});
+  miniCards.forEach(x=>{
+    const valColor=x.c??(x.v>=0?TXT:'#f87171');
+    miniRow.appendChild(crd([
+      el('div',{style:{fontSize:10,color:MUT,whiteSpace:'nowrap'}},x.l),
+      el('div',{style:{fontSize:15,fontWeight:700,color:valColor,marginTop:3,whiteSpace:'nowrap'}},short(x.v))
+    ],{flexShrink:0,padding:'10px 12px',minWidth:90}));
   });
   hdr.appendChild(miniRow);
   wrap.appendChild(hdr);
@@ -360,7 +839,11 @@ function renderHome(){
 
   wrap.appendChild(secTitle('Enveloppes budgétaires'));
   const envWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:8}});
+  // Pour l'enveloppe Épargne : afficher le total des comptes épargne
+  const savingsAccTotal=accounts.filter(a=>a.isSavings===true).reduce((s,a)=>s+a.bal,0);
   envelopes.forEach(e=>{
+    const isEpargne=e.name.toLowerCase().includes('épargne')||e.name.toLowerCase().includes('epargne')||e.id==='epargne';
+    if(isEpargne) e={...e,bal:savingsAccTotal};
     const row=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
     const left=el('div',{style:{display:'flex',alignItems:'center',gap:10}});
     const ico=el('div',{style:{width:36,height:36,borderRadius:10,background:e.color+'22',display:'flex',alignItems:'center',justifyContent:'center'}});
@@ -423,7 +906,124 @@ wrap.appendChild(grp([lbl('Montant (€)'),amtInpEl]));
   wrap.appendChild(distBox);
   if(!isXfr){wrap.appendChild(grp([lbl('Compte'),mkSelect(f.accId,state.accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>setState({addForm:{...state.addForm,accId:v}}))]));}
   else{wrap.appendChild(grp([lbl('De'),mkSelect(f.fromId,state.accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>setState({addForm:{...state.addForm,fromId:v}}))]));wrap.appendChild(grp([lbl('Vers'),mkSelect(f.toId,state.accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>setState({addForm:{...state.addForm,toId:v}}))]));}
-  if(f.typeId==='pret')wrap.appendChild(grp([lbl('Personne'),mkInp(f.person,'Nom...',v=>{state.addForm={...state.addForm,person:v};persist();})]));
+  if(f.typeId==='emprunt'){
+  const empWrap=el('div',{style:{marginBottom:12,padding:'0 16px'}});
+  empWrap.appendChild(lbl('Créancier (qui me prête)'));
+  const existCreditors=state.owedDebts.filter(d=>d.rem>0).map(d=>d.creditor);
+  const empInp=el('input',{type:'text',placeholder:'Nom, banque, ami...',list:'creditors-list',
+    style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+      padding:'11px 13px',color:TXT,fontSize:15,outline:'none'}});
+  empInp.value=f.person||'';
+  empInp.addEventListener('input',e=>{state.addForm={...state.addForm,person:e.target.value};persist();});
+  const dlC=el('datalist',{id:'creditors-list'});
+  existCreditors.forEach(n=>{const o=document.createElement('option');o.value=n;dlC.appendChild(o);});
+  empWrap.appendChild(empInp);empWrap.appendChild(dlC);
+  wrap.appendChild(empWrap);
+}
+if(f.typeId==='rembDonne'){
+  const rdWrap=el('div',{style:{marginBottom:12,padding:'0 16px'}});
+  rdWrap.appendChild(lbl('Rembourser à'));
+  const activeOwed=state.owedDebts.filter(d=>d.rem>0);
+  if(activeOwed.length===0){
+    rdWrap.appendChild(el('div',{style:{fontSize:12,color:MUT,padding:'10px',background:CARD,
+      borderRadius:10,border:'1px solid '+BORDER}},'Aucune dette active. Enregistre d’abord un emprunt.'));
+  }else{
+    const rdOpts=[{value:'',label:'— Sélectionner le créancier —'},...activeOwed.map(d=>({value:d.creditor,label:d.creditor+' — reste '+eur(d.rem)}))];
+    const rdSel=mkSelect(f.person||'',rdOpts,v=>{
+      state.addForm={...state.addForm,person:v};persist();
+      const infoEl=document.getElementById('rmbd-info');
+      const soldEl=document.getElementById('rmbd-sold-btn');
+      if(infoEl){
+        const d=activeOwed.find(x=>x.creditor===v);
+        if(d&&v){infoEl.textContent='Restant dû : '+eur(d.rem)+' sur '+eur(d.total);if(soldEl)soldEl.style.display='block';}
+        else{infoEl.textContent='';if(soldEl)soldEl.style.display='none';}
+      }
+    });
+    rdWrap.appendChild(rdSel);
+    const rdInfo=el('div',{id:'rmbd-info',style:{fontSize:11,color:MUT2,marginTop:5}},
+      f.person?'Restant dû : '+eur((activeOwed.find(d=>d.creditor===f.person)||{rem:0}).rem):'');
+    rdWrap.appendChild(rdInfo);
+    const rdSold=el('button',{id:'rmbd-sold-btn',style:{marginTop:8,background:'#3b1a1a',
+      border:'1px solid #dc2626',borderRadius:9,padding:'7px 14px',color:'#fca5a5',
+      fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+      display:f.person?'block':'none'}},'Saisir le montant total restant');
+    rdSold.addEventListener('click',()=>{
+      const d=activeOwed.find(x=>x.creditor===state.addForm.person);
+      if(d)setState({addForm:{...state.addForm,amt:String(d.rem)}});
+    });
+    rdWrap.appendChild(rdSold);
+  }
+  wrap.appendChild(rdWrap);
+}
+if(f.typeId==='pret'){
+  const personWrap=el('div',{style:{marginBottom:12,padding:'0 16px'}});
+  personWrap.appendChild(lbl('Personne'));
+  const existingDebtors=state.debts.filter(d=>d.rem>0).map(d=>d.person);
+  // Input with datalist for autocomplete
+  const personInp=el('input',{type:'text',placeholder:'Nom (nouveau ou existant)...',
+    list:'debtors-list',
+    style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+      padding:'11px 13px',color:TXT,fontSize:15,outline:'none'}});
+  personInp.value=f.person||'';
+  personInp.addEventListener('input',e=>{state.addForm={...state.addForm,person:e.target.value};persist();});
+  const dl=el('datalist',{id:'debtors-list'});
+  existingDebtors.forEach(name=>{const opt=document.createElement('option');opt.value=name;dl.appendChild(opt);});
+  if(existingDebtors.includes(f.person?.trim())){
+    const existD=state.debts.find(d=>d.person.toLowerCase()===f.person.trim().toLowerCase()&&d.rem>0);
+    if(existD){
+      const info=el('div',{style:{fontSize:11,color:'#f59e0b',marginTop:5,padding:'6px 10px',
+        background:'#2d1f00',borderRadius:8,border:'1px solid #92400e'}},
+        '⚠ Dette existante : '+eur(existD.rem)+' restant — le nouveau montant sera ajouté');
+      personWrap.appendChild(personInp);personWrap.appendChild(dl);personWrap.appendChild(info);
+      wrap.appendChild(personWrap);
+    }else{personWrap.appendChild(personInp);personWrap.appendChild(dl);wrap.appendChild(personWrap);}
+  }else{personWrap.appendChild(personInp);personWrap.appendChild(dl);wrap.appendChild(personWrap);}
+}
+if(f.typeId==='rembRecv'){
+  const activeDebts=state.debts.filter(d=>d.rem>0);
+  const remWrap=el('div',{style:{marginBottom:12,padding:'0 16px'}});
+  remWrap.appendChild(lbl('Personne qui rembourse'));
+  if(activeDebts.length===0){
+    remWrap.appendChild(el('div',{style:{fontSize:12,color:MUT,padding:'10px',background:CARD,
+      borderRadius:10,border:'1px solid '+BORDER}},'Aucune dette active. Ajoute d\u2019abord un pr\u00eat dans l\u2019onglet Dettes.'));
+  }else{
+    // Option vide en premier — oblige à choisir
+    const opts=[{value:'',label:'— S\u00e9lectionner la personne —'},...activeDebts.map(d=>({value:d.person,label:d.person+' — reste '+eur(d.rem)}))];
+    const sel=mkSelect(f.person||'', opts,
+      v=>{state.addForm={...state.addForm,person:v};persist();
+        // Met à jour l'info solde dynamiquement
+        const infoEl=document.getElementById('remb-info');
+        const soldEl=document.getElementById('remb-sold-btn');
+        if(infoEl){
+          const d=activeDebts.find(x=>x.person===v);
+          if(d&&v){
+            infoEl.textContent='Restant d\u00fb : '+eur(d.rem)+' sur '+eur(d.total)+' pr\u00eat\u00e9';
+            infoEl.style.color=MUT2;
+            if(soldEl)soldEl.style.display='block';
+          }else{
+            infoEl.textContent='';
+            if(soldEl)soldEl.style.display='none';
+          }
+        }
+      });
+    remWrap.appendChild(sel);
+    // Info solde (vide au départ)
+    const infoEl=el('div',{id:'remb-info',style:{fontSize:11,color:MUT2,marginTop:5}},
+      f.person?'Restant d\u00fb : '+eur((activeDebts.find(d=>d.person===f.person)||{rem:0}).rem):'');
+    remWrap.appendChild(infoEl);
+    // Bouton "saisir montant total" (caché si rien sélectionné)
+    const soldBtn=el('button',{id:'remb-sold-btn',style:{marginTop:8,background:'#022c22',
+      border:'1px solid #10b981',borderRadius:9,padding:'7px 14px',color:'#34d399',
+      fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+      display:f.person?'block':'none'}},'Saisir le montant total restant');
+    soldBtn.addEventListener('click',()=>{
+      const d=activeDebts.find(x=>x.person===state.addForm.person);
+      if(d)setState({addForm:{...state.addForm,amt:String(d.rem)}});
+    });
+    remWrap.appendChild(soldBtn);
+  }
+  wrap.appendChild(remWrap);
+}
   wrap.appendChild(grp([lbl('Description'),mkInp(f.desc,'Note optionnelle...',v=>{state.addForm={...state.addForm,desc:v};persist();})]));
   const di=el('input',{type:'date',style:{width:'100%',background:BG,border:`1px solid ${BORDER}`,borderRadius:10,padding:'11px 13px',color:TXT,fontSize:15,outline:'none'}});di.value=f.date;di.addEventListener('change',e=>setState({addForm:{...state.addForm,date:e.target.value}}));
   wrap.appendChild(grp([lbl('Date'),di]));
@@ -475,39 +1075,381 @@ function renderHistory(){
 function renderDebts(){
   const {debts,accounts,debtModal,debtAdding,debtForm}=state;
   if(debtModal){
-    const d=debtModal;let ra='',racc=accounts.find(a=>a.id==='hello')?.id||accounts[0].id;
+    const d=debtModal;
+
+    // ── Écran de confirmation surpaiement ──
+    if(d._overpay){
+      const ov=d._overpay;
+      const w=el('div',{style:{paddingBottom:20,color:TXT}});
+      const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+      bb.addEventListener('click',()=>setState({debtModal:{...d,_overpay:undefined}}));w.appendChild(bb);
+      const cv=el('div',{style:{padding:'0 16px'}});
+      cv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:4}},'⚠️ Montant supérieur à la dette'));
+
+      // Résumé
+      const sumBox=el('div',{style:{background:'#3b1a1a',border:'1px solid #7f1d1d',borderRadius:12,padding:'12px 14px',marginBottom:16}});
+      const rows=[
+        ['Montant saisi',    eur(ov.amt),       '#fca5a5'],
+        ['Restant dû',  eur(d.rem),        '#fcd34d'],
+        ['Surplus',          eur(ov.surplus),   '#f87171'],
+      ];
+      rows.forEach(([l,v,c])=>{
+        const r=el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:5}});
+        r.appendChild(el('span',{style:{fontSize:12,color:MUT2}},l));
+        r.appendChild(el('span',{style:{fontSize:13,fontWeight:700,color:c}},v));
+        sumBox.appendChild(r);
+      });
+      cv.appendChild(sumBox);
+      cv.appendChild(el('div',{style:{fontSize:12,color:MUT2,marginBottom:14}},'Que veux-tu faire avec ce surplus de '+eur(ov.surplus)+' ?'));
+
+      // Option 1 : corriger
+      const opt1=el('button',{style:{width:'100%',background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:12,padding:'13px 14px',color:TXT,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginBottom:10,textAlign:'left'}});
+      const o1t=el('div',{style:{fontWeight:700,color:'#93c5fd',marginBottom:3}},'✉️ Corriger le montant');
+      const o1d=el('div',{style:{fontSize:11,color:MUT,fontWeight:400}},'Enregistrer seulement '+eur(d.rem)+' (montant réel de la dette). La dette est soldée.');
+      opt1.appendChild(o1t);opt1.appendChild(o1d);
+      opt1.addEventListener('click',()=>repayDebt(d.id,String(d.rem),ov.accId,ov.note,'cap'));
+      cv.appendChild(opt1);
+
+      // Option 2 : accepter surplus comme bénéfice
+      const opt2=el('button',{style:{width:'100%',background:'#022c22',border:'1px solid #10b981',borderRadius:12,padding:'13px 14px',color:TXT,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit',textAlign:'left'}});
+      const o2t=el('div',{style:{fontWeight:700,color:'#34d399',marginBottom:3}},'✓ Accepter le surplus comme bénéfice');
+      const o2d=el('div',{style:{fontSize:11,color:MUT,fontWeight:400}},'Dette soldée + '+eur(ov.surplus)+' enregistré en bénéfice sur le compte.');
+      opt2.appendChild(o2t);opt2.appendChild(o2d);
+      opt2.addEventListener('click',()=>repayDebt(d.id,String(ov.amt),ov.accId,ov.note,'full'));
+      cv.appendChild(opt2);
+
+      w.appendChild(cv);return w;
+    }
+
+    let ra='',racc=accounts.find(a=>a.id==='hello')?.id||accounts[0].id,rnote='';
     const w=el('div',{style:{paddingBottom:20,color:TXT}});
-    const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');bb.addEventListener('click',()=>setState({debtModal:null}));w.appendChild(bb);
+    const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+    bb.addEventListener('click',()=>setState({debtModal:null}));w.appendChild(bb);
     const cv=el('div',{style:{padding:'0 16px'}});
-    cv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:3}},'Remboursement reçu'));cv.appendChild(el('div',{style:{fontSize:13,color:MUT,marginBottom:16}},d.person+' — reste : '+eur(d.rem)));
+    // Header
+    const hd=el('div',{style:{marginBottom:16}});
+    hd.appendChild(el('div',{style:{fontSize:17,fontWeight:700}},'Remboursement de '+d.person));
+    const prog=el('div',{style:{display:'flex',gap:12,marginTop:8,background:CARD,borderRadius:10,padding:'10px 12px',border:'1px solid '+BORDER}});
+    const pTotal=el('div');pTotal.appendChild(el('div',{style:{fontSize:10,color:MUT}},'Total prêté'));pTotal.appendChild(el('div',{style:{fontSize:14,fontWeight:700,color:TXT}},eur(d.total)));
+    const pRem=el('div');pRem.appendChild(el('div',{style:{fontSize:10,color:MUT}},'Restant dû'));pRem.appendChild(el('div',{style:{fontSize:14,fontWeight:700,color:'#f87171'}},eur(d.rem)));
+    const pPaid=el('div');pPaid.appendChild(el('div',{style:{fontSize:10,color:MUT}},'Déjà remboursé'));pPaid.appendChild(el('div',{style:{fontSize:14,fontWeight:700,color:'#34d399'}},eur(+(d.total-d.rem).toFixed(2))));
+    prog.appendChild(pTotal);prog.appendChild(pRem);prog.appendChild(pPaid);hd.appendChild(prog);
+    cv.appendChild(hd);
+    // Montant
     const ai=mkInp(ra,'0.00',v=>{ra=v;},'number',{fontSize:24,textAlign:'center',padding:13});
+    cv.appendChild(grp([lbl('Montant reçu (€)'),ai]));
+    // Avertissement surpaiement live
+    const ovWarn=el('div',{style:{display:'none',fontSize:11,color:'#fca5a5',
+      background:'#3b1a1a',border:'1px solid #7f1d1d',borderRadius:8,
+      padding:'7px 10px',margin:'-6px 16px 8px'}});
+    ai.addEventListener('input',e=>{
+      const v=parseFloat(e.target.value)||0;
+      if(v>d.rem&&v>0){
+        ovWarn.style.display='block';
+        ovWarn.textContent='⚠ '+eur(v)+' > restant dû ('+eur(d.rem)+'). Un écran de confirmation s’affichera.';
+      }else{ovWarn.style.display='none';}
+    });
+    cv.appendChild(ovWarn);
+    // Bouton tout rembourser
+    const soldBtn=el('button',{style:{display:'block',margin:'0 16px 12px',background:'#022c22',border:'1px solid #10b981',borderRadius:9,padding:'7px 14px',color:'#34d399',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}},'Saisir le montant total restant ('+eur(d.rem)+')');
+    soldBtn.addEventListener('click',()=>{ai.value=String(d.rem);ra=String(d.rem);ovWarn.style.display='none';});
+    cv.appendChild(soldBtn);
+    // Compte
     const as=mkSelect(racc,accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>{racc=v;});
-    cv.appendChild(grp([lbl('Montant reçu (€)'),ai]));cv.appendChild(grp([lbl('Créditer sur'),as]));
+    cv.appendChild(grp([lbl('Créditer sur'),as]));
+    // Note
+    const ni=mkInp('','Note optionnelle...',v=>{rnote=v;});
+    cv.appendChild(grp([lbl('Note'),ni]));
+    // Historique des remboursements
+    if((d.history||[]).length>0){
+      cv.appendChild(lbl('Historique des remboursements'));
+      const hist=el('div',{style:{padding:'0 16px',marginBottom:12}});
+      const hCard=el('div',{style:{background:CARD,borderRadius:12,border:'1px solid '+BORDER,overflow:'hidden'}});
+      d.history.forEach((h,i)=>{
+        const row=el('div',{style:{display:'flex',justifyContent:'space-between',padding:'9px 12px',
+          borderBottom:i<d.history.length-1?'1px solid '+BORDER:'none'}});
+        const left=el('div');
+        left.appendChild(el('div',{style:{fontSize:12,fontWeight:600,color:TXT}},eur(h.amount)));
+        if(h.note)left.appendChild(el('div',{style:{fontSize:10,color:MUT}},h.note));
+        row.appendChild(left);
+        row.appendChild(el('div',{style:{fontSize:10,color:MUT,alignSelf:'center'}},h.date||''));
+        hCard.appendChild(row);
+      });
+      hist.appendChild(hCard);cv.appendChild(hist);
+    }
+    // Boutons
     const br=el('div',{style:{display:'flex',gap:9}});
-    const bc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');bc.addEventListener('click',()=>setState({debtModal:null}));
-    const bo=el('button',{style:{flex:1,background:'#10b981',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Confirmer');bo.addEventListener('click',()=>repayDebt(d.id,ai.value,as.value));
+    const bc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');
+    bc.addEventListener('click',()=>setState({debtModal:null}));
+    const bo=el('button',{style:{flex:1,background:'#10b981',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Confirmer');
+    bo.addEventListener('click',()=>repayDebt(d.id,ai.value,as.value,ni.value));
     br.appendChild(bc);br.appendChild(bo);cv.appendChild(br);w.appendChild(cv);return w;
   }
   if(debtAdding){
     const w=el('div',{style:{paddingBottom:20,color:TXT}});
-    const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');bb.addEventListener('click',()=>setState({debtAdding:false}));w.appendChild(bb);
+    const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+    bb.addEventListener('click',()=>setState({debtAdding:false}));w.appendChild(bb);
     const cv=el('div',{style:{padding:'0 16px'}});
     cv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:14}},'Nouveau prêt'));
-    const ni=mkInp(debtForm.np,'Nom',v=>{state.debtForm={...state.debtForm,np:v};});
-    const ai=mkInp(debtForm.na,'0.00',v=>{state.debtForm={...state.debtForm,na:v};},'number');
-    const nni=mkInp(debtForm.nn,'Description...',v=>{state.debtForm={...state.debtForm,nn:v};});
-    cv.appendChild(grp([lbl('Personne'),ni]));cv.appendChild(grp([lbl('Montant (€)'),ai]));cv.appendChild(grp([lbl('Note'),nni]));
+
+    // Champ nom avec datalist (autocomplete sur noms existants)
+    const nameWrap=el('div',{style:{marginBottom:12}});
+    nameWrap.appendChild(lbl('Personne'));
+    const ni=el('input',{type:'text',placeholder:'Nom...',list:'debt-names-list',
+      style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+        padding:'11px 13px',color:TXT,fontSize:15,outline:'none'}});
+    ni.value=debtForm.np||'';
+    const dlNames=el('datalist',{id:'debt-names-list'});
+    debts.map(d=>d.person).filter((v,i,a)=>a.indexOf(v)===i).forEach(name=>{
+      const opt=document.createElement('option');opt.value=name;dlNames.appendChild(opt);
+    });
+    // Warning si doublon actif
+    const dupeWarn=el('div',{style:{fontSize:11,color:'#f59e0b',marginTop:5,padding:'6px 10px',
+      background:'#2d1f00',borderRadius:8,border:'1px solid #92400e',display:'none'}});
+    ni.addEventListener('input',e=>{
+      state.debtForm={...state.debtForm,np:e.target.value};
+      const existD=debts.find(d=>d.person.toLowerCase()===e.target.value.trim().toLowerCase()&&d.rem>0);
+      if(existD){
+        dupeWarn.style.display='block';
+        dupeWarn.textContent='⚠ Dette active existante : '+eur(existD.rem)+' restant. Le montant sera ajouté à la dette existante.';
+      }else{dupeWarn.style.display='none';}
+    });
+    nameWrap.appendChild(ni);nameWrap.appendChild(dlNames);nameWrap.appendChild(dupeWarn);
+    cv.appendChild(nameWrap);
+
+    // Montant
+    const ai=mkInp(debtForm.na,'0.00',v=>{state.debtForm={...state.debtForm,na:v};},'number',{fontSize:22,textAlign:'center',padding:12});
+    cv.appendChild(grp([lbl('Montant prêté (€)'),ai]));
+
+    // Compte débité
+    const accSel=mkSelect(debtForm.acc||accounts.find(a=>a.id==='hello')?.id||accounts[0].id,
+      accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),
+      v=>{state.debtForm={...state.debtForm,acc:v};});
+    cv.appendChild(grp([lbl('Débiter le compte'),accSel]));
+
+    // Note
+    const nni=mkInp(debtForm.nn,'Description optionnelle...',v=>{state.debtForm={...state.debtForm,nn:v};});
+    cv.appendChild(grp([lbl('Note'),nni]));
+
     const br=el('div',{style:{display:'flex',gap:9}});
-    const bc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');bc.addEventListener('click',()=>setState({debtAdding:false}));
-    const bo=el('button',{style:{flex:1,background:'#3b82f6',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Ajouter');
-    bo.addEventListener('click',()=>{const a=parseFloat(ai.value.replace(',','.'))||0;if(!ni.value.trim()||a<=0){showToast('Remplir nom et montant',false);return;}state.debts=[{id:uid(),person:ni.value.trim(),total:a,rem:a,note:nni.value.trim()},...state.debts];setState({debtAdding:false,debtForm:{np:'',na:'',nn:''}});showToast('Prêt ajouté',true);});
+    const bc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');
+    bc.addEventListener('click',()=>setState({debtAdding:false}));
+    const bo=el('button',{style:{flex:1,background:'#3b82f6',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Valider le prêt');
+    bo.addEventListener('click',()=>{
+      const a=parseFloat(ai.value.replace(',','.'))||0;
+      const name=ni.value.trim();
+      if(!name||a<=0){showToast('Remplir nom et montant',false);return;}
+      const accId=accSel.value;
+      // Débite le compte
+      state.accounts=state.accounts.map(ac=>ac.id===accId?{...ac,bal:+(ac.bal-a).toFixed(2)}:ac);
+      // Enregistre la transaction
+      state.txs=[{id:uid(),typeId:'pret',amount:a,accId,person:name,
+        desc:nni.value.trim()||'Prêt à '+name,date:todayStr(),createdAt:new Date().toISOString()},...state.txs];
+      // Gestion doublon
+      const existD=state.debts.find(d=>d.person.toLowerCase()===name.toLowerCase()&&d.rem>0);
+      if(existD){
+        state.debts=state.debts.map(d=>d.id===existD.id
+          ?{...d,total:+(d.total+a).toFixed(2),rem:+(d.rem+a).toFixed(2),
+            note:d.note?(d.note+' | '+nni.value.trim()):nni.value.trim()}
+          :d);
+        showToast('Ajouté à la dette existante de '+name,true);
+      }else{
+        state.debts=[{id:uid(),person:name,total:a,rem:a,note:nni.value.trim(),history:[]},...state.debts];
+        showToast('Prêt de '+eur(a)+' ajouté pour '+name,true);
+      }
+      setState({debtAdding:false,debtForm:{np:'',na:'',nn:'',acc:''}});
+    });
     br.appendChild(bc);br.appendChild(bo);cv.appendChild(br);w.appendChild(cv);return w;
   }
+  const {debtTab,owedDebts,owedModal,owedAdding,owedForm}=state;
   const total=debts.filter(d=>d.rem>0).reduce((s,d)=>s+d.rem,0);
+  const owedTotal=owedDebts.filter(d=>d.rem>0).reduce((s,d)=>s+d.rem,0);
   const active=debts.filter(d=>d.rem>0);const done=debts.filter(d=>d.rem<=0);
+  const activeOwed=owedDebts.filter(d=>d.rem>0);const doneOwed=owedDebts.filter(d=>d.rem<=0);
   const w=el('div',{style:{paddingBottom:20,color:TXT}});
-  const hdr=el('div',{style:{padding:'18px 16px 4px'}});hdr.appendChild(el('div',{style:{fontSize:17,fontWeight:700}},'Prêts accordés'));
-  hdr.appendChild(el('div',{style:{fontSize:13,color:MUT,marginTop:3}},['Total restant dû : ',el('span',{style:{color:'#f87171',fontWeight:700}},eur(total))]));w.appendChild(hdr);
+
+  // Header avec totaux
+  const hdr=el('div',{style:{padding:'16px 16px 0'}});
+  hdr.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:10}},'Gestion des dettes'));
+  // Deux cartes résumé
+  const sumRow=el('div',{style:{display:'flex',gap:10,marginBottom:14}});
+  const c1=crd([
+    el('div',{style:{fontSize:10,color:MUT,marginBottom:3}},'On me doit'),
+    el('div',{style:{fontSize:18,fontWeight:800,color:'#34d399'}},eur(total)),
+    el('div',{style:{fontSize:10,color:MUT,marginTop:2}},active.length+' personne'+(active.length>1?'s':''))
+  ],{flex:1,padding:'10px 12px'});
+  const c2=crd([
+    el('div',{style:{fontSize:10,color:MUT,marginBottom:3}},'Je dois'),
+    el('div',{style:{fontSize:18,fontWeight:800,color:'#f87171'}},eur(owedTotal)),
+    el('div',{style:{fontSize:10,color:MUT,marginTop:2}},activeOwed.length+' créancier'+(activeOwed.length>1?'s':''))
+  ],{flex:1,padding:'10px 12px'});
+  sumRow.appendChild(c1);sumRow.appendChild(c2);hdr.appendChild(sumRow);
+
+  // Sous-onglets
+  const tabRow=el('div',{style:{display:'flex',gap:8,marginBottom:4}});
+  ['given','owed'].forEach((tid,i)=>{
+    const active=debtTab===tid;
+    const labels=['Prêts accordés','Mes dettes'];
+    const colors=['#10b981','#ef4444'];
+    const b=el('button',{style:{flex:1,background:active?colors[i]+'22':CARD,
+      border:'1px solid '+(active?colors[i]:BORDER),borderRadius:10,padding:'9px 6px',
+      color:active?colors[i]:MUT2,fontSize:12,fontWeight:active?700:400,
+      cursor:'pointer',fontFamily:'inherit',touchAction:'manipulation'}},labels[i]);
+    b.addEventListener('click',()=>setState({debtTab:tid}));
+    tabRow.appendChild(b);
+  });
+  hdr.appendChild(tabRow);
+  w.appendChild(hdr);
+
+  // ── Sous-onglet "Mes dettes" ──
+  if(debtTab==='owed'){
+    // Modale remboursement que je fais
+    if(owedModal){
+      const od=owedModal;
+      if(od._overpay){
+        const ov=od._overpay;
+        const mw=el('div',{style:{paddingBottom:20,color:TXT}});
+        const mbb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+        mbb.addEventListener('click',()=>setState({owedModal:{...od,_overpay:undefined}}));mw.appendChild(mbb);
+        const mcv=el('div',{style:{padding:'0 16px'}});
+        mcv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:10}},'⚠️ Montant supérieur à la dette'));
+        const sb=el('div',{style:{background:'#3b1a1a',border:'1px solid #7f1d1d',borderRadius:12,padding:'12px 14px',marginBottom:16}});
+        [['Montant saisi',eur(ov.amt),'#fca5a5'],['Restant dû',eur(od.rem),'#fcd34d'],['Surplus',eur(ov.surplus),'#f87171']].forEach(([l,v,c])=>{
+          const r=el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:5}});r.appendChild(el('span',{style:{fontSize:12,color:MUT2}},l));r.appendChild(el('span',{style:{fontSize:13,fontWeight:700,color:c}},v));sb.appendChild(r);
+        });
+        mcv.appendChild(sb);
+        const o1=el('button',{style:{width:'100%',background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:12,padding:'13px',color:TXT,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginBottom:10}});
+        o1.appendChild(el('div',{style:{fontWeight:700,color:'#93c5fd',marginBottom:3}},'✉️ Corriger — payer seulement '+eur(od.rem)));
+        o1.appendChild(el('div',{style:{fontSize:11,color:MUT,fontWeight:400}},'Ma dette sera soldée. Le surplus '+eur(ov.surplus)+' reste dans mon compte.'));
+        o1.addEventListener('click',()=>repayOwed(od.id,od.rem,ov.accId,ov.note));
+        mcv.appendChild(o1);
+        mw.appendChild(mcv);w.appendChild(mw);return w;
+      }
+
+      let ora='',oracc=accounts.find(a=>a.id==='hello')?.id||accounts[0].id,ornote='';
+      const mw=el('div',{style:{paddingBottom:20,color:TXT}});
+      const mbb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+      mbb.addEventListener('click',()=>setState({owedModal:null}));mw.appendChild(mbb);
+      const mcv=el('div',{style:{padding:'0 16px'}});
+      mcv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:3}},'Rembourser à '+od.creditor));
+      const prog=el('div',{style:{display:'flex',gap:10,marginTop:8,background:CARD,borderRadius:10,padding:'10px 12px',border:'1px solid '+BORDER,marginBottom:14}});
+      [{l:'Total emprunté',v:eur(od.total),c:TXT},{l:'Restant dû',v:eur(od.rem),c:'#f87171'},{l:'Déjà remboursé',v:eur(+(od.total-od.rem).toFixed(2)),c:'#34d399'}].forEach(x=>{
+        const pd=el('div');pd.appendChild(el('div',{style:{fontSize:10,color:MUT}},x.l));pd.appendChild(el('div',{style:{fontSize:13,fontWeight:700,color:x.c}},x.v));prog.appendChild(pd);
+      });
+      mcv.appendChild(prog);
+      const oai=mkInp(ora,'0.00',v=>{ora=v;},'number',{fontSize:22,textAlign:'center',padding:12});
+      const ovWarn=el('div',{style:{display:'none',fontSize:11,color:'#fca5a5',background:'#3b1a1a',border:'1px solid #7f1d1d',borderRadius:8,padding:'7px 10px',margin:'4px 0 8px'}});
+      oai.addEventListener('input',e=>{const v=parseFloat(e.target.value)||0;if(v>od.rem&&v>0){ovWarn.style.display='block';ovWarn.textContent='⚠ '+eur(v)+' > restant (±'+eur(od.rem)+'). Confirmation à l’étape suivante.';}else ovWarn.style.display='none';});
+      mcv.appendChild(grp([lbl('Montant à rembourser (€)'),oai]));
+      mcv.appendChild(ovWarn);
+      const oSold=el('button',{style:{display:'block',margin:'0 16px 12px',background:'#3b1a1a',border:'1px solid #dc2626',borderRadius:9,padding:'7px 14px',color:'#fca5a5',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}},'Saisir le montant total restant ('+eur(od.rem)+')');
+      oSold.addEventListener('click',()=>{oai.value=String(od.rem);ora=String(od.rem);ovWarn.style.display='none';});
+      mcv.appendChild(oSold);
+      const oas=mkSelect(oracc,accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>{oracc=v;});
+      mcv.appendChild(grp([lbl('Débiter le compte'),oas]));
+      const oni=mkInp('','Note optionnelle...',v=>{ornote=v;});
+      mcv.appendChild(grp([lbl('Note'),oni]));
+      if((od.history||[]).length>0){
+        const hist=el('div',{style:{padding:'0 16px',marginBottom:12}});
+        hist.appendChild(lbl('Historique de mes remboursements'));
+        const hCard=el('div',{style:{background:CARD,borderRadius:12,border:'1px solid '+BORDER,overflow:'hidden'}});
+        od.history.forEach((h,i)=>{const row=el('div',{style:{display:'flex',justifyContent:'space-between',padding:'9px 12px',borderBottom:i<od.history.length-1?'1px solid '+BORDER:'none'}});const left=el('div');left.appendChild(el('div',{style:{fontSize:12,fontWeight:600,color:TXT}},eur(h.amount)));if(h.note)left.appendChild(el('div',{style:{fontSize:10,color:MUT}},h.note));row.appendChild(left);row.appendChild(el('div',{style:{fontSize:10,color:MUT,alignSelf:'center'}},h.date||''));hCard.appendChild(row);});
+        hist.appendChild(hCard);mcv.appendChild(hist);
+      }
+      const obr=el('div',{style:{display:'flex',gap:9}});
+      const obc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');obc.addEventListener('click',()=>setState({owedModal:null}));
+      const obo=el('button',{style:{flex:1,background:'#dc2626',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Confirmer');
+      obo.addEventListener('click',()=>{
+        const a=parseFloat(oai.value)||0;if(a<=0){showToast('Montant invalide',false);return;}
+        repayOwed(od.id,a,oas.value,oni.value);
+      });
+      obr.appendChild(obc);obr.appendChild(obo);mcv.appendChild(obr);mw.appendChild(mcv);w.appendChild(mw);return w;
+    }
+
+    // Formulaire ajout emprunt
+    if(owedAdding){
+      const mw=el('div',{style:{paddingBottom:20,color:TXT}});
+      const mbb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5}},'← Retour');
+      mbb.addEventListener('click',()=>setState({owedAdding:false}));mw.appendChild(mbb);
+      const mcv=el('div',{style:{padding:'0 16px'}});
+      mcv.appendChild(el('div',{style:{fontSize:17,fontWeight:700,marginBottom:14}},'Nouvel emprunt'));
+      const credI=el('input',{type:'text',placeholder:'Nom ou institution...',style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,padding:'11px 13px',color:TXT,fontSize:15,outline:'none'}});
+      credI.value=owedForm.creditor||'';
+      credI.addEventListener('input',e=>{state.owedForm={...state.owedForm,creditor:e.target.value};});
+      mcv.appendChild(grp([lbl('Qui me prête (créancier)'),credI]));
+      const oAmtI=mkInp(owedForm.amt,'0.00',v=>{state.owedForm={...state.owedForm,amt:v};},'number',{fontSize:22,textAlign:'center',padding:12});
+      mcv.appendChild(grp([lbl('Montant emprunté (€)'),oAmtI]));
+      const oAccS=mkSelect(owedForm.acc||accounts.find(a=>a.id==='hello')?.id||accounts[0].id,
+        accounts.map(a=>({value:a.id,label:a.name+' ('+eur(a.bal)+')'})),v=>{state.owedForm={...state.owedForm,acc:v};});
+      mcv.appendChild(grp([lbl('Créditer le compte'),oAccS]));
+      const oNoteI=mkInp(owedForm.note,'Description optionnelle...',v=>{state.owedForm={...state.owedForm,note:v};});
+      mcv.appendChild(grp([lbl('Note'),oNoteI]));
+      const obr=el('div',{style:{display:'flex',gap:9}});
+      const obc=el('button',{style:{flex:1,background:'#334155',color:TXT,border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Annuler');obc.addEventListener('click',()=>setState({owedAdding:false}));
+      const obo=el('button',{style:{flex:1,background:'#ef4444',color:'white',border:'none',borderRadius:12,padding:13,fontSize:15,fontWeight:700,cursor:'pointer'}},'Valider l’emprunt');
+      obo.addEventListener('click',()=>{
+        const a=parseFloat(oAmtI.value.replace(',','.'))||0;
+        const cred=credI.value.trim();
+        if(!cred||a<=0){showToast('Remplir créancier et montant',false);return;}
+        const accId=oAccS.value;
+        state.accounts=state.accounts.map(ac=>ac.id===accId?{...ac,bal:+(ac.bal+a).toFixed(2)}:ac);
+        state.txs=[{id:uid(),typeId:'emprunt',amount:a,accId,person:cred,
+          desc:oNoteI.value.trim()||'Emprunt de '+cred,date:todayStr(),
+          createdAt:new Date().toISOString()},...state.txs];
+        const existing=state.owedDebts.find(d=>d.creditor.toLowerCase()===cred.toLowerCase()&&d.rem>0);
+        if(existing){
+          state.owedDebts=state.owedDebts.map(d=>d.id===existing.id
+            ?{...d,total:+(d.total+a).toFixed(2),rem:+(d.rem+a).toFixed(2),
+              note:d.note?(d.note+' | '+oNoteI.value.trim()):oNoteI.value.trim()}:d);
+          showToast('Ajouté à l’emprunt existant',true);
+        }else{
+          state.owedDebts=[{id:uid(),creditor:cred,total:a,rem:a,note:oNoteI.value.trim(),history:[]},...state.owedDebts];
+          showToast('Emprunt de '+eur(a)+' enregistré',true);
+        }
+        setState({owedAdding:false,owedForm:{creditor:'',amt:'',acc:'',note:''}});
+      });
+      obr.appendChild(obc);obr.appendChild(obo);mcv.appendChild(obr);mw.appendChild(mcv);w.appendChild(mw);return w;
+    }
+
+    // Liste "mes dettes"
+    const oList=el('div',{style:{padding:'10px 16px 0',display:'flex',flexDirection:'column',gap:8}});
+    if(activeOwed.length===0&&doneOwed.length===0){
+      const empty=el('div',{style:{textAlign:'center',padding:'40px 20px',color:MUT}});
+      empty.appendChild(el('div',{style:{fontSize:28,fontWeight:800,color:BORDER,marginBottom:8}},'∅'));
+      empty.appendChild(el('div',null,'Aucune dette enregistrée'));
+      empty.appendChild(el('div',{style:{fontSize:11,marginTop:4}},'“Nouvel emprunt” pour en ajouter une'));
+      oList.appendChild(empty);
+    }
+    activeOwed.forEach(od=>{
+      const pct=od.total>0?((od.total-od.rem)/od.total)*100:0;
+      const oc=crd([],{border:'1px solid '+BORDER});
+      const tr=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}});
+      const nd=el('div');nd.appendChild(el('div',{style:{fontSize:14,fontWeight:700}},od.creditor));if(od.note)nd.appendChild(el('div',{style:{fontSize:10,color:MUT,marginTop:2}},od.note));tr.appendChild(nd);
+      const ad=el('div',{style:{textAlign:'right'}});ad.appendChild(el('div',{style:{fontSize:17,fontWeight:800,color:'#f87171'}},eur(od.rem)));if(od.total!==od.rem)ad.appendChild(el('div',{style:{fontSize:10,color:MUT}},'/ '+eur(od.total)));tr.appendChild(ad);oc.appendChild(tr);
+      if(pct>0){const bar=el('div',{style:{height:3,background:BORDER,borderRadius:3,marginBottom:9}});bar.appendChild(el('div',{style:{height:'100%',width:pct+'%',background:'#10b981',borderRadius:3}}));oc.appendChild(bar);}
+      if((od.history||[]).length>0){
+        const hist=el('div',{style:{borderTop:'1px solid '+BORDER,marginTop:6,paddingTop:8,marginBottom:8}});
+        hist.appendChild(el('div',{style:{fontSize:9,color:MUT,fontWeight:700,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:5}},'Remboursements effectués'));
+        od.history.slice(0,3).forEach(h=>{const hr=el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:3}});hr.appendChild(el('span',{style:{fontSize:11,color:MUT2}},h.date+(h.note?' — '+h.note:'')));hr.appendChild(el('span',{style:{fontSize:11,fontWeight:700,color:'#34d399'}},'−'+eur(h.amount)));hist.appendChild(hr);});
+        if(od.history.length>3)hist.appendChild(el('div',{style:{fontSize:10,color:MUT}},('+'+(od.history.length-3)+' autre(s)')));
+        oc.appendChild(hist);
+      }
+      const br=el('div',{style:{display:'flex',gap:7}});
+      const bb=el('button',{style:{flex:1,background:'#3b1a1a',border:'1px solid #dc2626',borderRadius:9,padding:'9px',color:'#fca5a5',fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation',fontFamily:'inherit'}},'Rembourser');
+      bb.addEventListener('click',()=>setState({owedModal:od}));
+      const bd=el('button',{style:{background:BG,border:'1px solid '+BORDER,borderRadius:9,padding:'9px 13px',color:MUT,fontSize:11,cursor:'pointer',touchAction:'manipulation'}},'✕');
+      bd.addEventListener('click',()=>{if(confirm('Supprimer cette dette ?')){state.owedDebts=state.owedDebts.filter(x=>x.id!==od.id);setState({});}});
+      br.appendChild(bb);br.appendChild(bd);oc.appendChild(br);oList.appendChild(oc);
+    });
+    if(doneOwed.length>0){
+      oList.appendChild(secTitle('Soldées'));
+      doneOwed.forEach(od=>{const c=el('div',{style:{background:CARD,borderRadius:14,padding:'12px 14px',border:'1px solid '+BORDER,display:'flex',justifyContent:'space-between',opacity:0.5}});c.appendChild(el('span',{style:{fontSize:13,color:MUT}},od.creditor));c.appendChild(el('span',{style:{fontSize:13,color:'#34d399',fontWeight:600}},'✓ '+eur(od.total)));oList.appendChild(c);});
+    }
+    const oAddBtn=el('button',{style:{background:'#3b1a1a',border:'1px solid #ef4444',borderRadius:12,padding:13,fontSize:13,color:'#fca5a5',cursor:'pointer',width:'100%',marginTop:4,fontWeight:700,touchAction:'manipulation',fontFamily:'inherit'}},'+ Nouvel emprunt');
+    oAddBtn.addEventListener('click',()=>setState({owedAdding:true,owedForm:{creditor:'',amt:'',acc:'',note:''}}));
+    oList.appendChild(oAddBtn);
+    w.appendChild(oList);return w;
+  }
   const list=el('div',{style:{padding:'10px 16px 0',display:'flex',flexDirection:'column',gap:8}});
   active.forEach(d=>{
     const pct=d.total>0?((d.total-d.rem)/d.total)*100:0;
@@ -516,13 +1458,29 @@ function renderDebts(){
     const nd=el('div');nd.appendChild(el('div',{style:{fontSize:14,fontWeight:700}},d.person));if(d.note)nd.appendChild(el('div',{style:{fontSize:10,color:MUT,marginTop:2}},d.note));tr.appendChild(nd);
     const ad=el('div',{style:{textAlign:'right'}});ad.appendChild(el('div',{style:{fontSize:17,fontWeight:800,color:'#f87171'}},eur(d.rem)));if(d.total!==d.rem)ad.appendChild(el('div',{style:{fontSize:10,color:MUT}},'/ '+eur(d.total)));tr.appendChild(ad);c.appendChild(tr);
     if(pct>0){const bar=el('div',{style:{height:3,background:BORDER,borderRadius:3,marginBottom:9}});bar.appendChild(el('div',{style:{height:'100%',width:pct+'%',background:'#10b981',borderRadius:3}}));c.appendChild(bar);}
+    // Mini historique
+    if((d.history||[]).length>0){
+      const hist=el('div',{style:{borderTop:'1px solid '+BORDER,marginTop:10,paddingTop:8,marginBottom:8}});
+      hist.appendChild(el('div',{style:{fontSize:9,color:MUT,fontWeight:700,letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:5}},'Remboursements'));
+      d.history.slice(0,3).forEach(h=>{
+        const hr=el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:3}});
+        hr.appendChild(el('span',{style:{fontSize:11,color:MUT2}},h.date+(h.note?' — '+h.note:'')));
+        hr.appendChild(el('span',{style:{fontSize:11,fontWeight:700,color:'#34d399'}},'+'+eur(h.amount)));
+        hist.appendChild(hr);
+      });
+      if(d.history.length>3)hist.appendChild(el('div',{style:{fontSize:10,color:MUT}},('+'+(d.history.length-3)+' autre(s)')));
+      c.appendChild(hist);
+    }
     const br=el('div',{style:{display:'flex',gap:7}});
-    const bb=el('button',{style:{flex:1,background:'#022c22',border:'1px solid #10b981',borderRadius:9,padding:'7px',color:'#34d399',fontSize:11,fontWeight:700,cursor:'pointer'}},'Rbst reçu');bb.addEventListener('click',()=>setState({debtModal:d}));
-    const bd=el('button',{style:{background:BG,border:`1px solid ${BORDER}`,borderRadius:9,padding:'7px 13px',color:MUT,fontSize:11,cursor:'pointer'}},'✕');bd.addEventListener('click',()=>{if(confirm('Supprimer ce prêt ?')){state.debts=state.debts.filter(x=>x.id!==d.id);setState({});}});
+    const bb=el('button',{style:{flex:1,background:'#022c22',border:'1px solid #10b981',borderRadius:9,padding:'9px',color:'#34d399',fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation'}},'Enregistrer remboursement');
+    bb.addEventListener('click',()=>setState({debtModal:d}));
+    const bd=el('button',{style:{background:BG,border:'1px solid '+BORDER,borderRadius:9,padding:'9px 13px',color:MUT,fontSize:11,cursor:'pointer',touchAction:'manipulation'}},'✕');
+    bd.addEventListener('click',()=>{if(confirm('Supprimer ce prêt ?')){state.debts=state.debts.filter(x=>x.id!==d.id);setState({});}});
     br.appendChild(bb);br.appendChild(bd);c.appendChild(br);list.appendChild(c);
   });
   if(done.length){list.appendChild(secTitle('Soldés'));done.forEach(d=>{const c=el('div',{style:{background:CARD,borderRadius:14,padding:'12px 14px',border:`1px solid ${BORDER}`,display:'flex',justifyContent:'space-between',opacity:0.5}});c.appendChild(el('span',{style:{fontSize:13,color:MUT}},d.person));c.appendChild(el('span',{style:{fontSize:13,color:'#34d399',fontWeight:600}},'✓ '+eur(d.total)));list.appendChild(c);});}
-  const ab=el('button',{style:{background:CARD,border:`1px dashed ${BORDER}`,borderRadius:12,padding:13,fontSize:13,color:MUT2,cursor:'pointer',width:'100%',marginTop:4}},'+ Ajouter un nouveau prêt');ab.addEventListener('click',()=>setState({debtAdding:true,debtForm:{np:'',na:'',nn:''}}));list.appendChild(ab);
+  const ab=el('button',{style:{background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:12,padding:13,fontSize:13,color:'#93c5fd',cursor:'pointer',width:'100%',marginTop:4,fontWeight:700,touchAction:'manipulation',fontFamily:'inherit'}},'+ Nouveau prêt');
+  ab.addEventListener('click',()=>setState({debtAdding:true,debtForm:{np:'',na:'',nn:'',acc:''}}));list.appendChild(ab);
   w.appendChild(list);return w;
 }
 
@@ -545,6 +1503,194 @@ function renderSettings(){
     },{border:'1px solid #3b82f6',fontSize:13})
   ]);
   w.appendChild(el('div',{style:{padding:'0 16px'}},resetZeroCard));
+
+  /* --- PROFIL --- */
+  w.appendChild(secTitle('Mon profil'));
+  const profileWrap=el('div',{style:{padding:'0 16px'}});
+  const nameCard=crd([
+    el('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},'Ton prénom'),
+    (()=>{
+      const ni=el('input',{type:'text',placeholder:'Ton prénom...',
+        style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+          padding:'11px 13px',color:TXT,fontSize:15,outline:'none',marginBottom:10}});
+      ni.value=settings.userName||'';
+      ni.addEventListener('input',e=>{state.settings={...state.settings,userName:e.target.value};saveSettings(state.settings);});
+      return ni;
+    })()
+  ]);
+  profileWrap.appendChild(nameCard);
+  w.appendChild(profileWrap);
+
+  /* --- COMPTES --- */
+  w.appendChild(secTitle('Mes comptes'));
+  const accWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:8}});
+  state.accounts.forEach((acc,i)=>{
+    const ac=crd([]);
+    const row1=el('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:8}});
+    // Couleur cliquable (cycle)
+    const colDot=el('div',{style:{width:32,height:32,borderRadius:9,background:acc.color,
+      cursor:'pointer',flexShrink:0,border:'2px solid '+BORDER,
+      display:'flex',alignItems:'center',justifyContent:'center'}});
+    colDot.appendChild(el('span',{style:{fontSize:9,fontWeight:800,color:'white'}},acc.abbr||''));
+    let cIdx=PALETTE.indexOf(acc.color);
+    colDot.addEventListener('click',()=>{
+      cIdx=(cIdx+1)%PALETTE.length;
+      state.accounts=state.accounts.map((a,j)=>j===i?{...a,color:PALETTE[cIdx],abbr:a.name.slice(0,2).toUpperCase()}:a);
+      persist();render();
+    });
+    row1.appendChild(colDot);
+    const nameI=el('input',{type:'text',placeholder:'Nom du compte',
+      style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+        padding:'9px 10px',color:TXT,fontSize:13,outline:'none'}});
+    nameI.value=acc.name;
+    nameI.addEventListener('input',e=>{
+      state.accounts=state.accounts.map((a,j)=>j===i?{...a,name:e.target.value,abbr:e.target.value.slice(0,2).toUpperCase()}:a);
+      persist();
+    });
+    row1.appendChild(nameI);
+    if(state.accounts.length>1){
+      const del=el('button',{style:{background:'none',border:'none',color:MUT,
+        fontSize:16,cursor:'pointer',padding:'4px 7px',flexShrink:0,touchAction:'manipulation'}},'✕');
+      del.addEventListener('click',()=>{
+        if(confirm('Supprimer le compte "'+acc.name+'" ?')){
+          state.accounts=state.accounts.filter((_,j)=>j!==i);
+          persist();render();
+        }
+      });
+      row1.appendChild(del);
+    }
+    ac.appendChild(row1);
+    const row2=el('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:8}});
+    row2.appendChild(el('span',{style:{fontSize:11,color:MUT}},'Solde actuel :'));
+    const balI=el('input',{type:'number',inputMode:'decimal',
+      style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+        padding:'9px 10px',color:TXT,fontSize:13,outline:'none'}});
+    balI.value=acc.bal.toFixed(2);
+    balI.addEventListener('input',e=>{
+      state.accounts=state.accounts.map((a,j)=>j===i?{...a,bal:parseFloat(e.target.value)||0}:a);
+      persist();
+    });
+    row2.appendChild(balI);
+    row2.appendChild(el('span',{style:{fontSize:13,color:MUT}},'€'));
+    ac.appendChild(row2);
+    // Toggle épargne
+    const row3=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
+    row3.appendChild(el('div',null,[
+      el('div',{style:{fontSize:12,color:TXT}},'Compte épargne'),
+      el('div',{style:{fontSize:10,color:MUT}},'Apparaît dans le total Épargne en accueil')
+    ]));
+    row3.appendChild(mkToggle(acc.isSavings===true,()=>{
+      const current=state.accounts[i];
+      state.accounts=state.accounts.map((a,j)=>j===i?{...a,isSavings:!(current.isSavings===true)}:a);
+      persist();render();
+    }));
+    ac.appendChild(row3);
+    accWrap.appendChild(ac);
+  });
+  const addAccBtn=el('button',{style:{background:CARD,border:'1px dashed '+BORDER,
+    borderRadius:12,padding:'11px',color:MUT2,fontSize:13,cursor:'pointer',
+    width:'100%',fontFamily:'inherit',touchAction:'manipulation'}},
+    '+ Ajouter un compte');
+  addAccBtn.addEventListener('click',()=>{
+    const newColor=PALETTE[state.accounts.length%PALETTE.length];
+    state.accounts=[...state.accounts,{id:uid(),name:'',bal:0,color:newColor,abbr:''}];
+    persist();render();
+  });
+  accWrap.appendChild(addAccBtn);
+  w.appendChild(accWrap);
+
+  /* --- ENVELOPPES --- */
+  w.appendChild(secTitle('Mes enveloppes'));
+  const envWrap2=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:8}});
+  const envTotal=state.envelopes.reduce((s,e)=>s+e.rate*100,0);
+  const envOk=Math.abs(envTotal-100)<0.1;
+  const totalEnvBox=el('div',{style:{background:envOk?'#022c22':'#3b1a1a',
+    border:'1px solid '+(envOk?'#10b981':'#7f1d1d'),borderRadius:10,
+    padding:'8px 14px',display:'flex',justifyContent:'space-between',
+    alignItems:'center',marginBottom:6}});
+  totalEnvBox.appendChild(el('span',{style:{fontSize:12,color:envOk?'#34d399':'#fca5a5'}},envOk?'✓ Total valide (100%)':'⚠ Total : doit être 100%'));
+  totalEnvBox.appendChild(el('span',{style:{fontSize:18,fontWeight:800,color:envOk?'#34d399':'#f87171'}},envTotal.toFixed(1)+'%'));
+  envWrap2.appendChild(totalEnvBox);
+  state.envelopes.forEach((env,i)=>{
+    const ec=crd([]);
+    const row=el('div',{style:{display:'flex',gap:8,alignItems:'center'}});
+    const colDot=el('div',{style:{width:14,height:14,borderRadius:7,
+      background:env.color,flexShrink:0,cursor:'pointer'}});
+    let cIdx=PALETTE.indexOf(env.color);
+    colDot.addEventListener('click',()=>{
+      cIdx=(cIdx+1)%PALETTE.length;
+      state.envelopes=state.envelopes.map((e,j)=>j===i?{...e,color:PALETTE[cIdx]}:e);
+      persist();render();
+    });
+    row.appendChild(colDot);
+    const nI=el('input',{type:'text',placeholder:'Nom',
+      style:{flex:1,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+        padding:'8px 10px',color:TXT,fontSize:13,outline:'none'}});
+    nI.value=env.name;
+    nI.addEventListener('input',e=>{
+      state.envelopes=state.envelopes.map((x,j)=>j===i?{...x,name:e.target.value}:x);
+      persist();
+    });
+    row.appendChild(nI);
+    const rI=el('input',{type:'number',inputMode:'decimal',
+      style:{width:52,background:BG,border:'1px solid '+BORDER,borderRadius:8,
+        padding:'8px',color:TXT,fontSize:13,outline:'none',textAlign:'center'}});
+    rI.value=(env.rate*100).toFixed(1);
+    rI.addEventListener('input',e=>{
+      const v=parseFloat(e.target.value)||0;
+      state.envelopes=state.envelopes.map((x,j)=>j===i?{...x,rate:v/100}:x);
+      persist();
+      const t=state.envelopes.reduce((s,x)=>s+x.rate*100,0);
+      const ok=Math.abs(t-100)<0.1;
+      totalEnvBox.style.background=ok?'#022c22':'#3b1a1a';
+      totalEnvBox.style.border='1px solid '+(ok?'#10b981':'#7f1d1d');
+      totalEnvBox.firstChild.textContent=ok?'✓ Total valide (100%)':'⚠ Total : doit être 100%';
+      totalEnvBox.firstChild.style.color=ok?'#34d399':'#fca5a5';
+      totalEnvBox.lastChild.textContent=t.toFixed(1)+'%';
+      totalEnvBox.lastChild.style.color=ok?'#34d399':'#f87171';
+    });
+    row.appendChild(el('span',{style:{fontSize:12,color:MUT}},'%'));
+    row.appendChild(rI);
+    if(state.envelopes.length>1){
+      const del=el('button',{style:{background:'none',border:'none',color:MUT,
+        fontSize:15,cursor:'pointer',padding:'2px 6px',flexShrink:0,touchAction:'manipulation'}},'✕');
+      del.addEventListener('click',()=>{
+        if(confirm('Supprimer l’enveloppe "'+env.name+'" ?')){
+          state.envelopes=state.envelopes.filter((_,j)=>j!==i);
+          persist();render();
+        }
+      });
+      row.appendChild(del);
+    }
+    ec.appendChild(row);
+    envWrap2.appendChild(ec);
+  });
+  const addEnvBtn2=el('button',{style:{background:CARD,border:'1px dashed '+BORDER,
+    borderRadius:12,padding:'11px',color:MUT2,fontSize:13,cursor:'pointer',
+    width:'100%',fontFamily:'inherit',touchAction:'manipulation'}},
+    '+ Ajouter une enveloppe');
+  addEnvBtn2.addEventListener('click',()=>{
+    const nc=PALETTE[state.envelopes.length%PALETTE.length];
+    state.envelopes=[...state.envelopes,{id:uid(),name:'',bal:0,rate:0,color:nc}];
+    persist();render();
+  });
+  envWrap2.appendChild(addEnvBtn2);
+  w.appendChild(envWrap2);
+
+  /* --- RELANCER LE WIZARD --- */
+  w.appendChild(secTitle('Reconfigurer'));
+  w.appendChild(el('div',{style:{padding:'0 16px'}},
+    mkBtn('Relancer l’assistant de configuration','#1e3a5f',()=>{
+      if(confirm('Relancer la configuration ? Tes données actuelles seront conservées.')){
+        localStorage.removeItem(SETUP_KEY);
+        state.wizard={step:0,name:settings.userName||'',
+          accounts:state.accounts.map(a=>({...a,bal:String(a.bal)})),
+          envelopes:state.envelopes.map(e=>({...e,rate:String((e.rate*100).toFixed(1))}))
+        };
+        setState({});
+      }
+    },{border:'1px solid #3b82f6',fontSize:13})
+  ));
 
   /* --- EXPORT / IMPORT --- */
   w.appendChild(secTitle('Sauvegarde locale'));
@@ -718,7 +1864,7 @@ function renderSettings(){
   w.appendChild(el('div',{style:{padding:'0 16px'}},
     mkBtn('Réinitialiser TOUT (comptes + données)','#7f1d1d',()=>{
       if(confirm('Effacer absolument tout, y compris la structure des comptes ?')){
-        state.accounts=INIT_ACCOUNTS;state.envelopes=INIT_ENVELOPES;state.txs=[];state.debts=INIT_DEBTS;
+        state.accounts=INIT_ACCOUNTS;state.envelopes=INIT_ENVELOPES;state.txs=[];state.debts=INIT_DEBTS;state.owedDebts=[];
         setState({});showToast('Réinitialisé complètement',false);
       }
     },{border:'1px solid #dc2626',fontSize:13})
@@ -734,6 +1880,13 @@ function render(){
   root.innerHTML='';
   const app=el('div',{style:{height:'100%',display:'flex',flexDirection:'column',background:BG}});
   const content=el('div',{style:{flex:1,overflowY:'auto',scrollbarWidth:'none',WebkitOverflowScrolling:'touch'}});
+  // Wizard premier lancement
+  if(state.wizard){
+    const wEl=renderWizard();
+    app.appendChild(wEl);
+    root.appendChild(app);
+    return;
+  }
   const {tab}=state;
   if(tab==='home')content.appendChild(renderHome());
   else if(tab==='add')content.appendChild(renderAdd());
