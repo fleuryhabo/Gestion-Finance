@@ -230,7 +230,7 @@ function resetToZero(){
 /* ===================== SYNC GOOGLE DRIVE ===================== */
 async function syncToDrive(manual=false){
   const url=state.settings.driveUrl.trim();
-  if(!url){if(manual)showToast('Configurez l\'URL Drive d\'abord',false);return;}
+  if(!url){return;} // URL Apps Script non configurée → silencieux
   setState({syncStatus:'syncing'});
   try{
     const payload=JSON.stringify({accounts:state.accounts,envelopes:state.envelopes,txs:state.txs,debts:state.debts,syncedAt:new Date().toISOString(),reminderEmail:state.settings.notifEmail,reminderTime:state.settings.emailTime,emailReminder:state.settings.emailReminder});
@@ -530,7 +530,7 @@ function renderWizard(){
   hdr.appendChild(el('div',{style:{fontSize:20,fontWeight:800,color:'#60a5fa',marginBottom:14}},'MonBudget'));
   // Indicateur étapes
   const steps=el('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:20}});
-  ['Profil','Comptes','Enveloppes'].forEach((label,i)=>{
+  ['Profil','Comptes','Enveloppes','Drive'].forEach((label,i)=>{
     const active=wz.step===i, done=wz.step>i;
     const dot=el('div',{style:{width:28,height:28,borderRadius:14,
       background:done?'#10b981':active?'#3b82f6':'#334155',
@@ -1912,64 +1912,70 @@ function renderSettings(){
   /* --- GOOGLE DRIVE OAUTH --- */
   w.appendChild(secTitle('Google Drive'));
   const driveWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:10}});
-  const isConfigured=GOOGLE_CLIENT_ID&&!GOOGLE_CLIENT_ID.includes('VOTRE_CLIENT_ID');
   const isConnected=!!gAccessToken;
-  const statusColor=syncStatus==='syncing'?'#f59e0b':syncStatus==='ok'?'#10b981':syncStatus==='err'?'#ef4444':MUT;
-  const lastSyncTxt=settings.lastSync?'Dernière sync : '+new Date(settings.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'Jamais synchronisé';
+  const lastSyncTxt=settings.lastSync
+    ?'Dernière sync : '+new Date(settings.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})
+    :'Jamais synchronisé';
 
-  if(!isConfigured){
-    // Client ID non configuré
-    driveWrap.appendChild(crd([
-      el('div',{style:{fontSize:13,fontWeight:600,color:'#f59e0b',marginBottom:6}},'⚙ Configuration requise'),
-      el('div',{style:{fontSize:11,color:MUT,lineHeight:1.6,marginBottom:10}},'Pour activer la sync Google Drive, le développeur doit configurer un Client ID Google Cloud dans le code. Voir le guide de configuration fourni.'),
-      el('div',{style:{fontSize:10,color:'#f59e0b',background:'#2d1f00',borderRadius:8,padding:'8px 10px'}},'Remplace VOTRE_CLIENT_ID_ICI dans le code HTML par ton Client ID Google.')
-    ]));
-  }else if(!isConnected){
-    // Non connecté → bouton connexion
-    const connCard=crd([
-      el('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},'Connecter ton Google Drive'),
-      el('div',{style:{fontSize:11,color:MUT,marginBottom:12,lineHeight:1.6}},'Tes données seront sauvegardées dans TON propre Google Drive, dans un fichier nommé "'+DRIVE_FILE_NAME+'". Aucune donnée ne passe par un serveur tiers.'),
-    ]);
-    const connBtn=el('button',{style:{width:'100%',background:'#fff',color:'#1a1a1a',
-      border:'none',borderRadius:10,padding:'12px 16px',fontSize:14,fontWeight:700,
+  if(!isConnected){
+    // Carte connexion Google
+    const connCard=crd([]);
+    connCard.appendChild(el('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},'Connecter ton Google Drive'));
+    connCard.appendChild(el('div',{style:{fontSize:11,color:MUT,marginBottom:14,lineHeight:1.6}},
+      'Tes données seront sauvegardées dans TON propre Google Drive. Aucune donnée ne passe par un serveur tiers.'));
+    // Bouton Google avec vrai style
+    const connBtn=el('button',{style:{width:'100%',background:'white',color:'#3c4043',
+      border:'1px solid #dadce0',borderRadius:10,padding:'11px 16px',fontSize:14,fontWeight:600,
       cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',
       justifyContent:'center',gap:10,touchAction:'manipulation'}});
-    // Logo Google SVG
-    const gLogo=document.createElementNS('http://www.w3.org/2000/svg','svg');
-    gLogo.setAttribute('viewBox','0 0 24 24');gLogo.setAttribute('width','20');gLogo.setAttribute('height','20');
-    gLogo.innerHTML='<path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>'; 
-    connBtn.appendChild(gLogo);
-    connBtn.appendChild(document.createTextNode('Connecter avec Google'));
-    connBtn.addEventListener('click',connectGoogle);
-    connCard.appendChild(connBtn);
-    driveWrap.appendChild(connCard);
-
-    // Restaurer depuis Drive si fichier existant
-    driveWrap.appendChild(crd([
-      el('div',{style:{fontSize:12,color:MUT,marginBottom:8}},'Tu as déjà utilisé cette app ? Connecte-toi d’abord puis restaure tes données.'),
-    ]));
-  }else{
-    // Connecté → dashboard sync
-    const connectedCard=crd([
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},[
-        el('div',null,[
-          el('div',{style:{fontSize:13,fontWeight:600,color:'#34d399'}},'✓ Google Drive connecté'),
-          el('div',{style:{fontSize:10,color:MUT,marginTop:2}},lastSyncTxt)
-        ]),
-        el('button',{style:{background:'none',border:'1px solid '+BORDER,borderRadius:8,
-          padding:'5px 10px',color:MUT,fontSize:11,cursor:'pointer',fontFamily:'inherit'}},
-          'Déconnecter')
-      ])
-    ]);
-    connectedCard.querySelector('button').addEventListener('click',()=>{
-      if(confirm('Déconnecter Google Drive ?'))disconnectGoogle();
+    // Google "G" logo en SVG inline
+    const svgNS='http://www.w3.org/2000/svg';
+    const gSvg=document.createElementNS(svgNS,'svg');
+    gSvg.setAttribute('viewBox','0 0 24 24');gSvg.setAttribute('width','20');gSvg.setAttribute('height','20');
+    const paths=[
+      ['#4285F4','M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z'],
+      ['#34A853','M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z'],
+      ['#FBBC05','M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z'],
+      ['#EA4335','M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z']
+    ];
+    paths.forEach(([fill,d])=>{
+      const p=document.createElementNS(svgNS,'path');p.setAttribute('fill',fill);p.setAttribute('d',d);gSvg.appendChild(p);
     });
-
-    // Sync auto toggle
-    const autoRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4}});
+    connBtn.appendChild(gSvg);
+    connBtn.appendChild(document.createTextNode('Connecter avec Google'));
+    connBtn.addEventListener('click',()=>{
+      if(typeof google==='undefined'||!google.accounts){
+        showToast('Librairie Google non chargée. Utilise l’app depuis GitHub Pages.',false,5000);
+        return;
+      }
+      connectGoogle();
+    });
+    connCard.appendChild(connBtn);
+    // Info si fichier existant
+    connCard.appendChild(el('div',{style:{fontSize:10,color:MUT,marginTop:10,textAlign:'center'}},
+      'Déjà utilisé l’app avant ? Tes données Drive seront restaurées automatiquement.'));
+    driveWrap.appendChild(connCard);
+  }else{
+    // Connecté → dashboard
+    const connectedCard=crd([]);
+    // Header statut
+    const statusRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}});
+    const statusLeft=el('div');
+    statusLeft.appendChild(el('div',{style:{fontSize:13,fontWeight:700,color:'#34d399'}},'✓ Google Drive connecté'));
+    statusLeft.appendChild(el('div',{style:{fontSize:10,color:MUT,marginTop:2}},lastSyncTxt));
+    statusRow.appendChild(statusLeft);
+    const discBtn=el('button',{style:{background:'none',border:'1px solid '+BORDER,borderRadius:8,
+      padding:'5px 10px',color:MUT,fontSize:11,cursor:'pointer',fontFamily:'inherit',touchAction:'manipulation'}},
+      'Déconnecter');
+    discBtn.addEventListener('click',()=>{if(confirm('Déconnecter Google Drive ?'))disconnectGoogle();});
+    statusRow.appendChild(discBtn);
+    connectedCard.appendChild(statusRow);
+    // Sync auto
+    const autoRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',
+      paddingTop:10,borderTop:'1px solid '+BORDER}});
     autoRow.appendChild(el('div',null,[
-      el('div',{style:{fontSize:13,fontWeight:600}},'Sync automatique'),
-      el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Après chaque opération + 1x par jour')
+      el('div',{style:{fontSize:12,fontWeight:600,color:TXT}},'Sync automatique'),
+      el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Après chaque opération')
     ]));
     autoRow.appendChild(mkToggle(settings.autoSync,()=>{
       const ns={...state.settings,autoSync:!state.settings.autoSync};
@@ -1977,21 +1983,21 @@ function renderSettings(){
     }));
     connectedCard.appendChild(autoRow);
     driveWrap.appendChild(connectedCard);
-
     // Boutons action
     const syncBtn=mkBtn(
-      syncStatus==='syncing'?'Synchronisation...':'⬆ Sauvegarder maintenant',
+      syncStatus==='syncing'?'Synchronisation...':'⬆ Sauvegarder sur Drive',
       syncStatus==='syncing'?'#334155':'#10b981',
-      ()=>syncToGoogleDrive(true)
-    );
+      ()=>syncToGoogleDrive(true));
     driveWrap.appendChild(syncBtn);
-    const restBtn=el('button',{style:{width:'100%',background:CARD,
-      border:'1px solid '+BORDER,borderRadius:12,padding:'11px',
-      color:MUT2,fontSize:13,cursor:'pointer',fontFamily:'inherit',fontWeight:600}},
+    const restBtn=el('button',{style:{width:'100%',background:CARD,border:'1px solid '+BORDER,
+      borderRadius:12,padding:'11px',color:MUT2,fontSize:13,cursor:'pointer',
+      fontFamily:'inherit',fontWeight:600,touchAction:'manipulation'}},
       '⬇ Restaurer depuis Drive');
     restBtn.addEventListener('click',restoreFromGoogleDrive);
     driveWrap.appendChild(restBtn);
   }
+  w.appendChild(driveWrap);
+
     /* --- NOTIFICATIONS --- */
   w.appendChild(secTitle('Rappels quotidiens'));
   const notifWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:12}});
@@ -2091,7 +2097,7 @@ function renderSettings(){
   testEmailBtn.addEventListener('click',async()=>{
     const url=state.settings.driveUrl.trim();
     const email=state.settings.notifEmail.trim();
-    if(!url){showToast('Configure d\u2019abord l\u2019URL Drive',false);return;}
+    if(!url){showToast('Configure l\u2019URL Apps Script dans R\u00e9glages',false);return;}
     if(!email){showToast('Entre d\u2019abord ton email',false);return;}
     testEmailBtn.textContent='Envoi en cours...';
     testEmailBtn.disabled=true;
