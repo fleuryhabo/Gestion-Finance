@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Journal Financier">
+<meta name="apple-mobile-web-app-title" content="MonBudget">
 <meta name="theme-color" content="#0f172a">
-<title>Journal Financier</title>
+<title>MonBudget</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 html,body{height:100%;background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;overflow:hidden;}
@@ -18,6 +18,7 @@ input[type=number]{-moz-appearance:textfield;}
 input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7);}
 ::-webkit-scrollbar{display:none;}
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div id="root"></div>
@@ -68,13 +69,25 @@ const short=n=>{const neg=n<0,abs=Math.abs(n);return(neg?'−':'')+(abs>=1000?(a
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const todayStr=()=>new Date().toISOString().split('T')[0];
 const DKEY='jf_data_v3',SKEY='jf_settings_v1',SETUP_KEY='jf_setup_done';
+
+/* ====== GOOGLE DRIVE CONFIG ======
+   Remplace cette valeur par ton Client ID Google Cloud.
+   Voir le guide de configuration inclus dans le ZIP.
+   ================================= */
+const GOOGLE_CLIENT_ID = '852922478663-q8m0fr5p6ffnk9ab20edmn685gm9illn.apps.googleusercontent.com';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_FILE_NAME = 'MonBudget_Sauvegarde.json';
+
+let gTokenClient = null;
+let gAccessToken = null;
+let gFileId = null; // ID du fichier Drive une fois trouvé/créé
 const PALETTE=['#ef4444','#f97316','#f59e0b','#10b981','#059669','#0d9488',
   '#3b82f6','#6366f1','#7c3aed','#ec4899','#64748b','#0ea5e9'];
 
 /* ===================== PERSISTANCE ===================== */
 const loadData=()=>{try{const r=localStorage.getItem(DKEY);return r?JSON.parse(r):null;}catch{return null;}};
 const saveData=d=>{try{localStorage.setItem(DKEY,JSON.stringify(d));}catch{}};
-const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEnabled:false,notifTime:'20:00',notifEmail:'',emailReminder:false,emailTime:'08:00',lastNotifDate:'',userName:''};}};
+const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEnabled:false,notifTime:'20:00',notifEmail:'',emailReminder:false,emailTime:'08:00',lastNotifDate:'',userName:'',googleConnected:false};}};
 const saveSettings=s=>{try{localStorage.setItem(SKEY,JSON.stringify(s));}catch{}};
 
 /* ===================== ÉTAT ===================== */
@@ -158,7 +171,7 @@ function scheduleNotifCheck(){
     if(s.lastNotifDate===todayStr)return; // déjà envoyé aujourd'hui
     const [h,m]=s.notifTime.split(':').map(Number);
     if(now.getHours()===h&&now.getMinutes()===m){
-      new Notification('Journal Financier',{
+      new Notification('MonBudget',{
         body:'N\u2019oublie pas d\u2019enregistrer tes op\u00e9rations du jour avant la synchronisation.',
         icon:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%230f172a"/><text y="44" x="8" font-size="40">📒</text></svg>',
         badge:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="%2310b981"/><text y="44" x="12" font-size="36" fill="white">$</text></svg>',
@@ -172,7 +185,7 @@ function scheduleNotifCheck(){
 
 function sendTestNotif(){
   if(Notification.permission!=='granted'){showToast('Activer d\u2019abord les notifications',false);return;}
-  new Notification('Journal Financier — Test',{
+  new Notification('MonBudget — Test',{
     body:'Ceci est un rappel de test. Tu peux fermer cette notification.',
     requireInteraction:false
   });
@@ -329,6 +342,7 @@ function addTx(f){
           showToast('Dette soldée + '+eur(surplus)+' en bénéfice ✓',true,4000);
           setState({addForm:{...state.addForm,amt:'',desc:'',person:'',date:todayStr()}});
           if(state.settings.autoSync&&state.settings.driveUrl)setTimeout(()=>syncToDrive(),1000);
+  if(state.settings.autoSync&&gAccessToken)setTimeout(()=>syncToGoogleDrive(false),1500);
           return;
         }
         const entry={id:uid(),amount:amt,date:f.date||todayStr(),note:f.desc.trim()};
@@ -381,6 +395,7 @@ function addTx(f){
   setState({addForm:{...state.addForm,amt:'',desc:'',person:'',date:todayStr()}});
   showToast('Opération enregistrée ✓',true);
   if(state.settings.autoSync&&state.settings.driveUrl)setTimeout(()=>syncToDrive(),1000);
+  if(state.settings.autoSync&&gAccessToken)setTimeout(()=>syncToGoogleDrive(false),1500);
 }
 
 function repayDebt(did,amtStr,accId,note,forceMode){
@@ -512,7 +527,7 @@ function renderWizard(){
 
   // Header avec étapes
   const hdr=el('div',{style:{padding:'20px 16px 0'}});
-  hdr.appendChild(el('div',{style:{fontSize:20,fontWeight:800,color:'#60a5fa',marginBottom:14}},'Journal Financier'));
+  hdr.appendChild(el('div',{style:{fontSize:20,fontWeight:800,color:'#60a5fa',marginBottom:14}},'MonBudget'));
   // Indicateur étapes
   const steps=el('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:20}});
   ['Profil','Comptes','Enveloppes'].forEach((label,i)=>{
@@ -626,18 +641,28 @@ function renderWizard(){
       balRow.appendChild(balInp);
       balRow.appendChild(el('span',{style:{fontSize:13,color:MUT}},'€'));
       card.appendChild(balRow);
-      // Toggle épargne
-      const savRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
-      savRow.appendChild(el('div',null,[
-        el('div',{style:{fontSize:12,color:TXT}},'Compte épargne'),
-        el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Comptabilisé dans le total Épargne')
-      ]));
-      const savTog=mkToggle(acc.isSavings===true,()=>{
-        const cur=state.wizard.accounts[i];
-        const na=state.wizard.accounts.map((a,j)=>j===i?{...a,isSavings:!(cur.isSavings===true)}:a);
+      // Sélecteur type de compte
+      const savRow=el('div',{style:{display:'flex',alignItems:'center',gap:8,marginTop:4}});
+      savRow.appendChild(el('span',{style:{fontSize:11,color:MUT,whiteSpace:'nowrap'}},'Type :'));
+      const typeSelW=el('select',{style:{flex:1,
+        background:acc.isSavings===true?'#022c22':BG,
+        border:'1px solid '+(acc.isSavings===true?'#10b981':BORDER),
+        borderRadius:8,padding:'7px 10px',
+        color:acc.isSavings===true?'#34d399':TXT,
+        fontSize:12,outline:'none',fontFamily:'inherit',fontWeight:600}});
+      ['Normal','Épargne'].forEach((opt,oi)=>{
+        const o=document.createElement('option');
+        o.value=oi===1?'true':'false';
+        o.textContent=opt;
+        if((acc.isSavings===true)===(oi===1))o.selected=true;
+        typeSelW.appendChild(o);
+      });
+      typeSelW.addEventListener('change',e=>{
+        const isSav=e.target.value==='true';
+        const na=state.wizard.accounts.map((a,j)=>j===i?{...a,isSavings:isSav}:a);
         state.wizard={...state.wizard,accounts:na};render();
       });
-      savRow.appendChild(savTog);
+      savRow.appendChild(typeSelW);
       card.appendChild(savRow);
       body.appendChild(card);
     });
@@ -788,6 +813,174 @@ function renderWizard(){
   W.appendChild(foot);
   return W;
 }
+
+
+/* ===================== GOOGLE DRIVE OAUTH & API ===================== */
+
+function initGoogleAuth(){
+  if(!GOOGLE_CLIENT_ID||GOOGLE_CLIENT_ID.includes('VOTRE_CLIENT_ID'))return;
+  if(typeof google==='undefined')return;
+  gTokenClient=google.accounts.oauth2.initTokenClient({
+    client_id:GOOGLE_CLIENT_ID,
+    scope:DRIVE_SCOPE,
+    callback:(resp)=>{
+      if(resp.error){
+        showToast('Connexion Google échouée',false,4000);
+        setState({syncStatus:'err'});
+        return;
+      }
+      gAccessToken=resp.access_token;
+      const ns={...state.settings,googleConnected:true};
+      state.settings=ns;saveSettings(ns);
+      setState({syncStatus:'ok'});
+      showToast('Google Drive connecté ✓',true,3000);
+      // Chercher fichier existant puis synchroniser
+      findOrCreateDriveFile().then(()=>syncToGoogleDrive(false));
+    }
+  });
+}
+
+async function connectGoogle(){
+  if(!GOOGLE_CLIENT_ID||GOOGLE_CLIENT_ID.includes('VOTRE_CLIENT_ID')){
+    showToast('Client ID non configuré',false,4000);return;
+  }
+  if(typeof google==='undefined'){
+    showToast('Librairie Google non chargée',false,4000);return;
+  }
+  setState({syncStatus:'syncing'});
+  gTokenClient.requestAccessToken({prompt:'consent'});
+}
+
+function disconnectGoogle(){
+  if(gAccessToken&&typeof google!=='undefined'){
+    google.accounts.oauth2.revoke(gAccessToken,()=>{});
+  }
+  gAccessToken=null;gFileId=null;
+  const ns={...state.settings,googleConnected:false};
+  state.settings=ns;saveSettings(ns);
+  setState({syncStatus:null});
+  showToast('Déconnecté de Google Drive',true,2000);
+}
+
+async function driveRequest(url,method='GET',body=null,isMedia=false){
+  if(!gAccessToken)throw new Error('Non connecté');
+  const headers={'Authorization':'Bearer '+gAccessToken};
+  if(!isMedia&&body)headers['Content-Type']='application/json';
+  const opts={method,headers};
+  if(body)opts.body=isMedia?body:JSON.stringify(body);
+  const resp=await fetch(url,opts);
+  if(resp.status===401){
+    // Token expiré → reconnecter
+    gAccessToken=null;
+    const ns={...state.settings,googleConnected:false};
+    state.settings=ns;saveSettings(ns);
+    showToast('Session expirée — reconnecte Google Drive',false,5000);
+    setState({syncStatus:'err'});
+    throw new Error('Token expired');
+  }
+  return resp;
+}
+
+async function findOrCreateDriveFile(){
+  if(gFileId)return gFileId;
+  try{
+    // Chercher fichier existant
+    const q=encodeURIComponent(`name='${DRIVE_FILE_NAME}' and trashed=false`);
+    const r=await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+    const data=await r.json();
+    if(data.files&&data.files.length>0){
+      gFileId=data.files[0].id;
+    }else{
+      // Créer le fichier vide
+      const meta={name:DRIVE_FILE_NAME,mimeType:'application/json'};
+      const cr=await driveRequest('https://www.googleapis.com/drive/v3/files','POST',meta);
+      const cdata=await cr.json();
+      gFileId=cdata.id;
+    }
+    return gFileId;
+  }catch(e){
+    console.error('findOrCreateDriveFile:',e);throw e;
+  }
+}
+
+async function syncToGoogleDrive(manual=true){
+  if(!gAccessToken){
+    if(manual)showToast('Connecte d\'abord Google Drive',false,3000);
+    return;
+  }
+  setState({syncStatus:'syncing'});
+  try{
+    await findOrCreateDriveFile();
+    const payload=JSON.stringify({
+      accounts:state.accounts,envelopes:state.envelopes,
+      txs:state.txs,debts:state.debts,owedDebts:state.owedDebts,
+      syncedAt:new Date().toISOString(),version:3
+    });
+    // Upload multipart
+    const boundary='jf_boundary_'+Date.now();
+    const body=[
+      '--'+boundary,
+      'Content-Type: application/json; charset=UTF-8',
+      '',
+      JSON.stringify({name:DRIVE_FILE_NAME,mimeType:'application/json'}),
+      '--'+boundary,
+      'Content-Type: application/json',
+      '',
+      payload,
+      '--'+boundary+'--'
+    ].join('\r\n');
+    const r=await driveRequest(
+      `https://www.googleapis.com/upload/drive/v3/files/${gFileId}?uploadType=multipart`,
+      'PATCH',body,true
+    );
+    // Override content-type for multipart
+    const headers={'Authorization':'Bearer '+gAccessToken,'Content-Type':'multipart/related; boundary='+boundary};
+    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${gFileId}?uploadType=multipart`,
+      {method:'PATCH',headers,body});
+    const ns={...state.settings,lastSync:new Date().toISOString(),googleConnected:true};
+    state.settings=ns;saveSettings(ns);
+    setState({syncStatus:'ok'});
+    if(manual)showToast('Sauvegardé sur Drive ✓',true,3000);
+    setTimeout(()=>setState({syncStatus:null}),4000);
+  }catch(e){
+    console.error('syncToGoogleDrive:',e);
+    setState({syncStatus:'err'});
+    if(manual)showToast('Erreur sync Drive : '+e.message.slice(0,40),false,4000);
+    setTimeout(()=>setState({syncStatus:null}),4000);
+  }
+}
+
+async function restoreFromGoogleDrive(){
+  if(!gAccessToken){showToast('Connecte d\'abord Google Drive',false,3000);return;}
+  setState({syncStatus:'syncing'});
+  try{
+    await findOrCreateDriveFile();
+    const r=await driveRequest(`https://www.googleapis.com/drive/v3/files/${gFileId}?alt=media`);
+    const data=await r.json();
+    if(!data.accounts){showToast('Fichier Drive vide ou invalide',false,3000);setState({syncStatus:null});return;}
+    if(!confirm('Remplacer tes données locales par celles du Drive ?'))return;
+    state.accounts=(data.accounts||[]).map(a=>({...a,isSavings:a.isSavings===true}));
+    state.envelopes=data.envelopes||[];
+    state.txs=data.txs||[];
+    state.debts=data.debts||[];
+    state.owedDebts=data.owedDebts||[];
+    setState({syncStatus:'ok'});
+    showToast('Données restaurées depuis Drive ✓',true,4000);
+    setTimeout(()=>setState({syncStatus:null}),4000);
+  }catch(e){
+    setState({syncStatus:null});
+    showToast('Erreur restauration',false,3000);
+  }
+}
+
+function autoSyncIfNeeded(){
+  if(!gAccessToken||!state.settings.autoSync)return;
+  const last=state.settings.lastSync;
+  if(!last){syncToGoogleDrive(false);return;}
+  const diff=(Date.now()-new Date(last).getTime())/(1000*60*60);
+  if(diff>=24)syncToGoogleDrive(false);
+}
+
 
 /* ===================== PAGE ACCUEIL ===================== */
 function renderHome(){
@@ -1573,17 +1766,26 @@ function renderSettings(){
     row2.appendChild(balI);
     row2.appendChild(el('span',{style:{fontSize:13,color:MUT}},'€'));
     ac.appendChild(row2);
-    // Toggle épargne
-    const row3=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
-    row3.appendChild(el('div',null,[
-      el('div',{style:{fontSize:12,color:TXT}},'Compte épargne'),
-      el('div',{style:{fontSize:10,color:MUT}},'Apparaît dans le total Épargne en accueil')
-    ]));
-    row3.appendChild(mkToggle(acc.isSavings===true,()=>{
-      const current=state.accounts[i];
-      state.accounts=state.accounts.map((a,j)=>j===i?{...a,isSavings:!(current.isSavings===true)}:a);
+    // Sélecteur type de compte
+    const row3=el('div',{style:{display:'flex',alignItems:'center',gap:8,marginTop:4}});
+    row3.appendChild(el('span',{style:{fontSize:11,color:MUT,whiteSpace:'nowrap'}},'Type :'));
+    const typeSelS=el('select',{style:{flex:1,background:acc.isSavings===true?'#022c22':BG,
+      border:'1px solid '+(acc.isSavings===true?'#10b981':BORDER),
+      borderRadius:8,padding:'7px 10px',color:acc.isSavings===true?'#34d399':TXT,
+      fontSize:12,outline:'none',fontFamily:'inherit',fontWeight:600}});
+    ['Normal','Épargne'].forEach((opt,oi)=>{
+      const o=document.createElement('option');
+      o.value=oi===1?'true':'false';
+      o.textContent=opt;
+      if((acc.isSavings===true)===(oi===1))o.selected=true;
+      typeSelS.appendChild(o);
+    });
+    typeSelS.addEventListener('change',e=>{
+      const isSav=e.target.value==='true';
+      state.accounts=state.accounts.map((a,j)=>j===i?{...a,isSavings:isSav}:a);
       persist();render();
-    }));
+    });
+    row3.appendChild(typeSelS);
     ac.appendChild(row3);
     accWrap.appendChild(ac);
   });
@@ -1593,7 +1795,7 @@ function renderSettings(){
     '+ Ajouter un compte');
   addAccBtn.addEventListener('click',()=>{
     const newColor=PALETTE[state.accounts.length%PALETTE.length];
-    state.accounts=[...state.accounts,{id:uid(),name:'',bal:0,color:newColor,abbr:''}];
+    state.accounts=[...state.accounts,{id:uid(),name:'',bal:0,color:newColor,abbr:'',isSavings:false}];
     persist();render();
   });
   accWrap.appendChild(addAccBtn);
@@ -1707,26 +1909,90 @@ function renderSettings(){
   ]));
   w.appendChild(backupWrap);
 
-  /* --- SYNC GOOGLE DRIVE --- */
-  w.appendChild(secTitle('Sync Google Drive'));
+  /* --- GOOGLE DRIVE OAUTH --- */
+  w.appendChild(secTitle('Google Drive'));
   const driveWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:10}});
-  const urlCard=crd([
-    el('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},'URL Apps Script'),
-    el('div',{style:{fontSize:11,color:MUT,marginBottom:8}},'Obtenue lors du déploiement du script Google.'),
-    (()=>{const i=el('input',{type:'text',placeholder:'https://script.google.com/macros/s/...',style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,padding:'11px 13px',color:TXT,fontSize:11,outline:'none'}});i.value=settings.driveUrl||'';i.addEventListener('input',e=>{state.settings={...state.settings,driveUrl:e.target.value};saveSettings(state.settings);});return i;})()
-  ]);
-  driveWrap.appendChild(urlCard);
-  const autoRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}});
-  autoRow.appendChild(el('div',null,[el('div',{style:{fontSize:13,fontWeight:600}},'Sync automatique'),el('div',{style:{fontSize:11,color:MUT,marginTop:2}},'Synchronise chaque jour')]));
-  const sw=mkToggle(settings.autoSync,()=>{const ns={...state.settings,autoSync:!state.settings.autoSync};state.settings=ns;saveSettings(ns);render();});
-  autoRow.appendChild(sw);
+  const isConfigured=GOOGLE_CLIENT_ID&&!GOOGLE_CLIENT_ID.includes('VOTRE_CLIENT_ID');
+  const isConnected=!!gAccessToken;
   const statusColor=syncStatus==='syncing'?'#f59e0b':syncStatus==='ok'?'#10b981':syncStatus==='err'?'#ef4444':MUT;
-  const lastTxt=settings.lastSync?'Dernière sync : '+new Date(settings.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'Jamais synchronisé';
-  driveWrap.appendChild(crd([autoRow,el('div',{style:{fontSize:11,color:statusColor}},syncStatus==='syncing'?'Synchronisation...':lastTxt)]));
-  driveWrap.appendChild(mkBtn(syncStatus==='syncing'?'Synchronisation...':'Sync Drive maintenant',syncStatus==='syncing'?'#334155':'#7c3aed',()=>syncToDrive(true)));
-  w.appendChild(driveWrap);
+  const lastSyncTxt=settings.lastSync?'Dernière sync : '+new Date(settings.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'Jamais synchronisé';
 
-  /* --- NOTIFICATIONS --- */
+  if(!isConfigured){
+    // Client ID non configuré
+    driveWrap.appendChild(crd([
+      el('div',{style:{fontSize:13,fontWeight:600,color:'#f59e0b',marginBottom:6}},'⚙ Configuration requise'),
+      el('div',{style:{fontSize:11,color:MUT,lineHeight:1.6,marginBottom:10}},'Pour activer la sync Google Drive, le développeur doit configurer un Client ID Google Cloud dans le code. Voir le guide de configuration fourni.'),
+      el('div',{style:{fontSize:10,color:'#f59e0b',background:'#2d1f00',borderRadius:8,padding:'8px 10px'}},'Remplace VOTRE_CLIENT_ID_ICI dans le code HTML par ton Client ID Google.')
+    ]));
+  }else if(!isConnected){
+    // Non connecté → bouton connexion
+    const connCard=crd([
+      el('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},'Connecter ton Google Drive'),
+      el('div',{style:{fontSize:11,color:MUT,marginBottom:12,lineHeight:1.6}},'Tes données seront sauvegardées dans TON propre Google Drive, dans un fichier nommé "'+DRIVE_FILE_NAME+'". Aucune donnée ne passe par un serveur tiers.'),
+    ]);
+    const connBtn=el('button',{style:{width:'100%',background:'#fff',color:'#1a1a1a',
+      border:'none',borderRadius:10,padding:'12px 16px',fontSize:14,fontWeight:700,
+      cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',
+      justifyContent:'center',gap:10,touchAction:'manipulation'}});
+    // Logo Google SVG
+    const gLogo=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    gLogo.setAttribute('viewBox','0 0 24 24');gLogo.setAttribute('width','20');gLogo.setAttribute('height','20');
+    gLogo.innerHTML='<path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>'; 
+    connBtn.appendChild(gLogo);
+    connBtn.appendChild(document.createTextNode('Connecter avec Google'));
+    connBtn.addEventListener('click',connectGoogle);
+    connCard.appendChild(connBtn);
+    driveWrap.appendChild(connCard);
+
+    // Restaurer depuis Drive si fichier existant
+    driveWrap.appendChild(crd([
+      el('div',{style:{fontSize:12,color:MUT,marginBottom:8}},'Tu as déjà utilisé cette app ? Connecte-toi d’abord puis restaure tes données.'),
+    ]));
+  }else{
+    // Connecté → dashboard sync
+    const connectedCard=crd([
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},[
+        el('div',null,[
+          el('div',{style:{fontSize:13,fontWeight:600,color:'#34d399'}},'✓ Google Drive connecté'),
+          el('div',{style:{fontSize:10,color:MUT,marginTop:2}},lastSyncTxt)
+        ]),
+        el('button',{style:{background:'none',border:'1px solid '+BORDER,borderRadius:8,
+          padding:'5px 10px',color:MUT,fontSize:11,cursor:'pointer',fontFamily:'inherit'}},
+          'Déconnecter')
+      ])
+    ]);
+    connectedCard.querySelector('button').addEventListener('click',()=>{
+      if(confirm('Déconnecter Google Drive ?'))disconnectGoogle();
+    });
+
+    // Sync auto toggle
+    const autoRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4}});
+    autoRow.appendChild(el('div',null,[
+      el('div',{style:{fontSize:13,fontWeight:600}},'Sync automatique'),
+      el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Après chaque opération + 1x par jour')
+    ]));
+    autoRow.appendChild(mkToggle(settings.autoSync,()=>{
+      const ns={...state.settings,autoSync:!state.settings.autoSync};
+      state.settings=ns;saveSettings(ns);render();
+    }));
+    connectedCard.appendChild(autoRow);
+    driveWrap.appendChild(connectedCard);
+
+    // Boutons action
+    const syncBtn=mkBtn(
+      syncStatus==='syncing'?'Synchronisation...':'⬆ Sauvegarder maintenant',
+      syncStatus==='syncing'?'#334155':'#10b981',
+      ()=>syncToGoogleDrive(true)
+    );
+    driveWrap.appendChild(syncBtn);
+    const restBtn=el('button',{style:{width:'100%',background:CARD,
+      border:'1px solid '+BORDER,borderRadius:12,padding:'11px',
+      color:MUT2,fontSize:13,cursor:'pointer',fontFamily:'inherit',fontWeight:600}},
+      '⬇ Restaurer depuis Drive');
+    restBtn.addEventListener('click',restoreFromGoogleDrive);
+    driveWrap.appendChild(restBtn);
+  }
+    /* --- NOTIFICATIONS --- */
   w.appendChild(secTitle('Rappels quotidiens'));
   const notifWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:12}});
 
@@ -1916,6 +2182,11 @@ window.addEventListener('resize', fixViewport);
 window.addEventListener('orientationchange', function(){ setTimeout(fixViewport, 150); });
 init();
 scheduleNotifCheck();
+// Init Google Auth quand la librairie est prête
+window.addEventListener('load',()=>{
+  setTimeout(initGoogleAuth,500);
+  autoSyncIfNeeded();
+});
 </script>
 </body>
 </html>
