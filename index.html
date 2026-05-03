@@ -87,7 +87,7 @@ const PALETTE=['#ef4444','#f97316','#f59e0b','#10b981','#059669','#0d9488',
 /* ===================== PERSISTANCE ===================== */
 const loadData=()=>{try{const r=localStorage.getItem(DKEY);return r?JSON.parse(r):null;}catch{return null;}};
 const saveData=d=>{try{localStorage.setItem(DKEY,JSON.stringify(d));}catch{}};
-const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEnabled:false,notifTime:'20:00',notifEmail:'',emailReminder:false,emailTime:'08:00',lastNotifDate:'',userName:'',googleConnected:false};}};
+const loadSettings=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{driveUrl:'',autoSync:false,lastSync:null};}catch{return{driveUrl:'',autoSync:false,lastSync:null,notifEmail:'',emailReminder:false,emailTime:'21:00',userName:'',googleConnected:false};}};
 const saveSettings=s=>{try{localStorage.setItem(SKEY,JSON.stringify(s));}catch{}};
 
 /* ===================== ÉTAT ===================== */
@@ -151,46 +151,7 @@ function init(){
 }
 
 
-/* ===================== NOTIFICATIONS ===================== */
-function requestNotifPermission(cb){
-  if(!('Notification' in window)){showToast('Notifications non supportées',false);return;}
-  if(Notification.permission==='granted'){cb&&cb(true);return;}
-  Notification.requestPermission().then(p=>{
-    if(p==='granted'){showToast('Notifications activées ✓',true);cb&&cb(true);}
-    else{showToast('Permission refusée',false);cb&&cb(false);}
-  });
-}
-
-function scheduleNotifCheck(){
-  // Vérifie toutes les minutes si l'heure de rappel est atteinte
-  setInterval(()=>{
-    const s=state.settings;
-    if(!s.notifEnabled||Notification.permission!=='granted')return;
-    const now=new Date();
-    const todayStr=now.toISOString().split('T')[0];
-    if(s.lastNotifDate===todayStr)return; // déjà envoyé aujourd'hui
-    const [h,m]=s.notifTime.split(':').map(Number);
-    if(now.getHours()===h&&now.getMinutes()===m){
-      new Notification('MonBudget',{
-        body:'N\u2019oublie pas d\u2019enregistrer tes op\u00e9rations du jour avant la synchronisation.',
-        icon:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%230f172a"/><text y="44" x="8" font-size="40">📒</text></svg>',
-        badge:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="%2310b981"/><text y="44" x="12" font-size="36" fill="white">$</text></svg>',
-        requireInteraction:true
-      });
-      const ns={...state.settings,lastNotifDate:todayStr};
-      state.settings=ns;saveSettings(ns);
-    }
-  },30000); // vérifie toutes les 30 secondes
-}
-
-function sendTestNotif(){
-  if(Notification.permission!=='granted'){showToast('Activer d\u2019abord les notifications',false);return;}
-  new Notification('MonBudget — Test',{
-    body:'Ceci est un rappel de test. Tu peux fermer cette notification.',
-    requireInteraction:false
-  });
-  showToast('Notification test envoyée',true);
-}
+/* Notifications push supprimées */
 
 /* ===================== REMBOURSER MA DETTE ===================== */
 function repayOwed(did,amt,accId,note){
@@ -982,6 +943,116 @@ function autoSyncIfNeeded(){
 }
 
 
+
+/* ===================== SUPPRESSION / ÉDITION TRANSACTION ===================== */
+
+function canEditTx(tx){
+  if(!tx.date)return false;
+  const diff=(Date.now()-new Date(tx.date).getTime())/(1000*60*60*24);
+  return diff<=7;
+}
+
+function reverseTxEffects(tx){
+  const tp=TYPES.find(x=>x.id===tx.typeId);
+  if(!tp)return;
+  const amt=tx.amount;
+  if(tp.dir==='in'){
+    state.accounts=state.accounts.map(a=>a.id===tx.accId?{...a,bal:+(a.bal-amt).toFixed(2)}:a);
+    if(tp.env==='auto')state.envelopes=state.envelopes.map(e=>({...e,bal:+(e.bal-amt*e.rate).toFixed(2)}));
+    if(tx.typeId==='rembRecv'&&tx.person){
+      state.debts=state.debts.map(d=>
+        d.person.toLowerCase()===tx.person.toLowerCase()
+          ?{...d,rem:+(d.rem+amt).toFixed(2),history:(d.history||[]).filter(h=>h.id!==tx.id)}:d);
+    }
+    if(tx.typeId==='emprunt'&&tx.person){
+      state.owedDebts=state.owedDebts.map(d=>
+        d.creditor.toLowerCase()===tx.person.toLowerCase()
+          ?{...d,rem:+(d.rem-amt).toFixed(2),total:+(d.total-amt).toFixed(2)}:d
+      ).filter(d=>d.total>0);
+    }
+  }else if(tp.dir==='out'){
+    state.accounts=state.accounts.map(a=>a.id===tx.accId?{...a,bal:+(a.bal+amt).toFixed(2)}:a);
+    if(tp.env&&tp.env!=='auto')state.envelopes=state.envelopes.map(e=>e.id===tp.env?{...e,bal:+(e.bal+amt).toFixed(2)}:e);
+    if(tx.typeId==='pret'&&tx.person){
+      state.debts=state.debts.map(d=>
+        d.person.toLowerCase()===tx.person.toLowerCase()
+          ?{...d,rem:+(d.rem-amt).toFixed(2),total:+(d.total-amt).toFixed(2)}:d
+      ).filter(d=>d.total>0);
+    }
+    if(tx.typeId==='rembDonne'&&tx.person){
+      state.owedDebts=state.owedDebts.map(d=>
+        d.creditor.toLowerCase()===tx.person.toLowerCase()
+          ?{...d,rem:+(d.rem+amt).toFixed(2),history:(d.history||[]).filter(h=>h.id!==tx.id)}:d);
+    }
+  }else if(tp.dir==='xfr'){
+    state.accounts=state.accounts.map(a=>{
+      if(a.id===tx.fromId)return{...a,bal:+(a.bal+amt).toFixed(2)};
+      if(a.id===tx.toId)return{...a,bal:+(a.bal-amt).toFixed(2)};
+      return a;
+    });
+  }
+}
+
+function deleteTx(txId){
+  const tx=state.txs.find(x=>x.id===txId);
+  if(!tx)return;
+  reverseTxEffects(tx);
+  state.txs=state.txs.filter(x=>x.id!==txId);
+  setState({txModal:null});
+  showToast('Opération annulée ✓',true);
+}
+
+function applyTxEdit(txId,newAmt,newDesc){
+  const tx=state.txs.find(x=>x.id===txId);
+  if(!tx)return;
+  reverseTxEffects(tx);
+  const updated={...tx,amount:newAmt,desc:newDesc,editedAt:new Date().toISOString()};
+  state.txs=state.txs.map(x=>x.id===txId?updated:x);
+  const tp=TYPES.find(x=>x.id===updated.typeId);
+  if(tp){
+    if(tp.dir==='in'){
+      state.accounts=state.accounts.map(a=>a.id===updated.accId?{...a,bal:+(a.bal+newAmt).toFixed(2)}:a);
+      if(tp.env==='auto')state.envelopes=state.envelopes.map(e=>({...e,bal:+(e.bal+newAmt*e.rate).toFixed(2)}));
+    }else if(tp.dir==='out'){
+      state.accounts=state.accounts.map(a=>a.id===updated.accId?{...a,bal:+(a.bal-newAmt).toFixed(2)}:a);
+      if(tp.env&&tp.env!=='auto')state.envelopes=state.envelopes.map(e=>e.id===tp.env?{...e,bal:+(e.bal-newAmt).toFixed(2)}:e);
+    }else if(tp.dir==='xfr'){
+      state.accounts=state.accounts.map(a=>{
+        if(a.id===updated.fromId)return{...a,bal:+(a.bal-newAmt).toFixed(2)};
+        if(a.id===updated.toId)return{...a,bal:+(a.bal+newAmt).toFixed(2)};
+        return a;
+      });
+    }
+  }
+  setState({txModal:null});
+  showToast('Opération modifiée ✓',true);
+}
+
+function buildTxImpact(tx){
+  const tp=TYPES.find(x=>x.id===tx.typeId);
+  const lines=[];
+  const getAcc=id=>state.accounts.find(a=>a.id===id);
+  if(tp?.dir==='in'){
+    const ac=getAcc(tx.accId);
+    if(ac)lines.push('Compte '+ac.name+' : '+eur(ac.bal)+' → '+eur(+(ac.bal-tx.amount).toFixed(2)));
+    if(tp.env==='auto')state.envelopes.forEach(e=>
+      lines.push('Enveloppe '+e.name+' : '+eur(e.bal)+' → '+eur(+(e.bal-tx.amount*e.rate).toFixed(2))));
+    if(tx.typeId==='rembRecv'&&tx.person)lines.push('⚠ Dette de '+tx.person+' réouverte de '+eur(tx.amount));
+    if(tx.typeId==='emprunt'&&tx.person)lines.push('⚠ Emprunt de '+tx.person+' réduit de '+eur(tx.amount));
+  }else if(tp?.dir==='out'){
+    const ac=getAcc(tx.accId);
+    if(ac)lines.push('Compte '+ac.name+' : '+eur(ac.bal)+' → '+eur(+(ac.bal+tx.amount).toFixed(2)));
+    if(tp.env&&tp.env!=='auto'){const e=state.envelopes.find(x=>x.id===tp.env);if(e)lines.push('Enveloppe '+e.name+' : '+eur(e.bal)+' → '+eur(+(e.bal+tx.amount).toFixed(2)));}
+    if(tx.typeId==='pret'&&tx.person)lines.push('⚠ Prêt à '+tx.person+' supprimé des dettes');
+    if(tx.typeId==='rembDonne'&&tx.person)lines.push('⚠ Remboursement à '+tx.person+' annulé');
+  }else if(tp?.dir==='xfr'){
+    const fa=getAcc(tx.fromId),ta=getAcc(tx.toId);
+    if(fa)lines.push('Compte '+fa.name+' : '+eur(fa.bal)+' → '+eur(+(fa.bal+tx.amount).toFixed(2)));
+    if(ta)lines.push('Compte '+ta.name+' : '+eur(ta.bal)+' → '+eur(+(ta.bal-tx.amount).toFixed(2)));
+  }
+  return lines;
+}
+
 /* ===================== PAGE ACCUEIL ===================== */
 function renderHome(){
   const {accounts,envelopes,settings,syncStatus}=state;
@@ -1226,21 +1297,148 @@ if(f.typeId==='rembRecv'){
 
 /* ===================== PAGE HISTORIQUE ===================== */
 function renderHistory(){
-  const {txs,histFilter,accounts}=state;
+  const {txs,histFilter,accounts,txModal}=state;
   const getAcc=id=>accounts.find(a=>a.id===id);
-  const shown=histFilter==='all'?txs:txs.filter(tx=>{const t=TYPES.find(x=>x.id===tx.typeId);return histFilter==='in'?t?.dir==='in':histFilter==='out'?t?.dir==='out':t?.dir==='xfr';});
+
+  if(txModal){
+    const tx=txModal;
+    const tp=TYPES.find(x=>x.id===tx.typeId);
+    const isIn=tp?.dir==='in';const isX=tp?.dir==='xfr';
+    const impacts=buildTxImpact(tx);
+    let editDesc=tx.desc||'';
+    // Calcul apercu patrimoine avant/apres
+    const patrimoineActuel=state.accounts.reduce((s,a)=>s+a.bal,0);
+    const w=el('div',{style:{paddingBottom:20,color:TXT}});
+    const bb=el('button',{style:{background:'none',border:'none',color:MUT2,fontSize:13,
+      cursor:'pointer',padding:'18px 16px 6px',display:'flex',alignItems:'center',gap:5,
+      fontFamily:'inherit'}},'\u2190 Retour');
+    bb.addEventListener('click',()=>setState({txModal:null}));w.appendChild(bb);
+    const cv=el('div',{style:{padding:'0 16px'}});
+    // Header
+    const hd=el('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:12}});
+    const ico=el('div',{style:{width:40,height:40,borderRadius:11,
+      background:(tp?.color||'#64748b')+'22',display:'flex',alignItems:'center',
+      justifyContent:'center',flexShrink:0}});
+    ico.appendChild(el('span',{style:{fontSize:11,fontWeight:800,color:tp?.color||MUT}},tp?.abbr||'?'));
+    hd.appendChild(ico);
+    const hdInfo=el('div');
+    hdInfo.appendChild(el('div',{style:{fontSize:16,fontWeight:700}},tp?.label||tx.typeId));
+    hdInfo.appendChild(el('div',{style:{fontSize:11,color:MUT,marginTop:2}},
+      tx.date+(tx.person?' \u00b7 '+tx.person:'')));
+    hd.appendChild(hdInfo);cv.appendChild(hd);
+    cv.appendChild(el('div',{style:{fontSize:28,fontWeight:800,
+      color:isIn?'#34d399':isX?MUT2:'#f87171',marginBottom:14,
+      paddingBottom:14,borderBottom:'1px solid '+BORDER}},
+      (isIn?'+':isX?'':'\u2212')+eur(tx.amount)));
+
+    // === SECTION MODIFICATION ===
+    cv.appendChild(el('div',{style:{fontSize:10,color:MUT2,fontWeight:700,
+      letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:8}},'Modifier'));
+    const amtI=el('input',{type:'number',inputMode:'decimal',
+      style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+        padding:'11px 13px',color:TXT,fontSize:18,fontWeight:700,outline:'none',marginBottom:8}});
+    amtI.value=tx.amount;
+    // Apercu impact modification
+    const editPreview=el('div',{style:{fontSize:11,color:MUT,marginBottom:8,display:'none'}});
+    amtI.addEventListener('input',()=>{
+      const newA=parseFloat(amtI.value)||0;
+      if(newA>0&&newA!==tx.amount){
+        const diff=isIn?(newA-tx.amount):(tx.amount-newA);
+        const newPat=+(patrimoineActuel+diff).toFixed(2);
+        editPreview.style.display='block';
+        editPreview.style.color=diff>0?'#34d399':'#f87171';
+        editPreview.textContent='Patrimoine : '+eur(patrimoineActuel)+' \u2192 '+eur(newPat)+
+          (diff>0?' (+'+eur(diff)+')':' ('+eur(diff)+')');
+      }else{editPreview.style.display='none';}
+    });
+    const descI=el('input',{type:'text',placeholder:'Description...',
+      style:{width:'100%',background:BG,border:'1px solid '+BORDER,borderRadius:10,
+        padding:'11px 13px',color:TXT,fontSize:14,outline:'none',marginBottom:8}});
+    descI.value=tx.desc||'';
+    descI.addEventListener('input',e=>{editDesc=e.target.value;});
+    cv.appendChild(amtI);
+    cv.appendChild(editPreview);
+    cv.appendChild(descI);
+    const saveBtn=mkBtn('\u2713 Enregistrer la modification','#3b82f6',()=>{
+      const a=parseFloat(amtI.value.replace(',','.'))||0;
+      if(a<=0){showToast('Montant invalide',false);return;}
+      if(a===tx.amount&&editDesc.trim()===(tx.desc||'').trim()){showToast('Aucun changement',false);return;}
+      applyTxEdit(tx.id,a,editDesc.trim());
+    });
+    cv.appendChild(saveBtn);
+    cv.appendChild(el('div',{style:{height:1,background:BORDER,margin:'16px 0'}}));
+
+    // === SECTION SUPPRESSION ===
+    cv.appendChild(el('div',{style:{fontSize:10,color:'#fca5a5',fontWeight:700,
+      letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:8}},
+      'Annuler cette op\u00e9ration'));
+    // Apercu effets
+    const impBox=el('div',{style:{background:'#3b1a1a',border:'1px solid #7f1d1d',
+      borderRadius:10,padding:'10px 12px',marginBottom:12}});
+    if(impacts.length===0){
+      impBox.appendChild(el('div',{style:{fontSize:11,color:MUT}},
+        'Aucun effet direct sur les soldes.'));
+    }else{
+      impacts.forEach(line=>{
+        impBox.appendChild(el('div',{style:{fontSize:11,color:'#fca5a5',
+          marginBottom:4,lineHeight:1.5}},line));
+      });
+    }
+    cv.appendChild(impBox);
+
+    // Bouton 2 etapes (sans confirm() bloque sur mobile)
+    let delArmed=false,delTimer=null;
+    const delBtn=el('button',{style:{width:'100%',background:'#3b1a1a',
+      border:'1px solid #7f1d1d',borderRadius:12,padding:'12px',fontSize:14,
+      fontWeight:700,color:'#fca5a5',cursor:'pointer',fontFamily:'inherit',
+      touchAction:'manipulation',transition:'all 0.2s'}},
+      '\u26a0 Supprimer et annuler les effets');
+    delBtn.addEventListener('click',()=>{
+      if(!delArmed){
+        // 1er clic : armer
+        delArmed=true;
+        delBtn.style.background='#7f1d1d';
+        delBtn.style.border='1px solid #ef4444';
+        delBtn.style.color='white';
+        delBtn.textContent='\u2757 Appuie encore pour confirmer (3s)';
+        delTimer=setTimeout(()=>{
+          delArmed=false;
+          delBtn.style.background='#3b1a1a';
+          delBtn.style.border='1px solid #7f1d1d';
+          delBtn.style.color='#fca5a5';
+          delBtn.textContent='\u26a0 Supprimer et annuler les effets';
+        },3000);
+      }else{
+        // 2eme clic : confirmer
+        clearTimeout(delTimer);
+        deleteTx(tx.id);
+      }
+    });
+    cv.appendChild(delBtn);
+    w.appendChild(cv);return w;
+  }
+
+  const shown=histFilter==='all'?txs:txs.filter(tx=>{
+    const t=TYPES.find(x=>x.id===tx.typeId);
+    return histFilter==='in'?t?.dir==='in':histFilter==='out'?t?.dir==='out':t?.dir==='xfr';
+  });
   const wrap=el('div',{style:{paddingBottom:20,color:TXT}});
-  wrap.appendChild(el('div',{style:{padding:'18px 16px 10px',fontSize:17,fontWeight:700}},'Historique ('+txs.length+')'));
-  const filters=el('div',{style:{display:'flex',gap:6,padding:'0 16px 12px',overflowX:'auto',scrollbarWidth:'none'}});
+  wrap.appendChild(el('div',{style:{padding:'18px 16px 10px',fontSize:17,fontWeight:700}},
+    'Historique ('+txs.length+')'));
+  const filters=el('div',{style:{display:'flex',gap:6,padding:'0 16px 12px',
+    overflowX:'auto',scrollbarWidth:'none'}});
   [['all','Tout'],['in','Entrées'],['out','Sorties'],['xfr','Virements']].forEach(([id,lb])=>{
     const a=histFilter===id;
-    const b=el('button',{style:{background:a?'#3b82f6':CARD,border:`1px solid ${a?'#3b82f6':BORDER}`,borderRadius:18,padding:'5px 11px',color:a?'white':MUT2,fontSize:11,cursor:'pointer',fontWeight:a?700:400,whiteSpace:'nowrap'}},lb);
+    const b=el('button',{style:{background:a?'#3b82f6':CARD,border:'1px solid '+(a?'#3b82f6':BORDER),
+      borderRadius:18,padding:'5px 11px',color:a?'white':MUT2,fontSize:11,
+      cursor:'pointer',fontWeight:a?700:400,whiteSpace:'nowrap'}},lb);
     b.addEventListener('click',()=>setState({histFilter:id}));filters.appendChild(b);
   });
   wrap.appendChild(filters);
   if(!shown.length){
     const e=el('div',{style:{textAlign:'center',padding:'60px 20px',color:MUT}});
-    e.appendChild(el('div',{style:{fontSize:32,fontWeight:800,color:BORDER,marginBottom:10}},'∅'));e.appendChild(el('div',null,'Aucune opération'));
+    e.appendChild(el('div',{style:{fontSize:32,fontWeight:800,color:BORDER,marginBottom:10}},'\u00d8'));
+    e.appendChild(el('div',null,'Aucune opération'));
     wrap.appendChild(e);return wrap;
   }
   const list=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:7}});
@@ -1248,16 +1446,37 @@ function renderHistory(){
     const tp=TYPES.find(x=>x.id===tx.typeId);
     const isIn=tp?.dir==='in';const isX=tp?.dir==='xfr';
     const ac=getAcc(tx.accId);const fa=getAcc(tx.fromId);const ta=getAcc(tx.toId);
-    const row=el('div',{style:{background:CARD,borderRadius:14,padding:'12px 14px',border:`1px solid ${BORDER}`,display:'flex',justifyContent:'space-between',alignItems:'center'}});
+    const editable=canEditTx(tx);
+    const row=el('div',{style:{background:CARD,borderRadius:14,padding:'11px 13px',
+      border:'1px solid '+(editable?'#3d4f6b':BORDER),
+      display:'flex',justifyContent:'space-between',alignItems:'center'}});
     const left=el('div',{style:{display:'flex',alignItems:'center',gap:9,overflow:'hidden',flex:1}});
-    const ico=el('div',{style:{width:34,height:34,borderRadius:9,background:(tp?.color||'#64748b')+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}});
+    const ico=el('div',{style:{width:34,height:34,borderRadius:9,
+      background:(tp?.color||'#64748b')+'22',display:'flex',alignItems:'center',
+      justifyContent:'center',flexShrink:0}});
     ico.appendChild(el('span',{style:{fontSize:9,fontWeight:800,color:tp?.color||MUT}},tp?.abbr||'?'));
     left.appendChild(ico);
     const info=el('div',{style:{overflow:'hidden'}});
-    info.appendChild(el('div',{style:{fontSize:13,fontWeight:600,color:TXT,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},tx.desc||tp?.label));
-    info.appendChild(el('div',{style:{fontSize:10,color:MUT,marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},(tx.date||'')+' · '+(isX?(fa?.name||'?')+' → '+(ta?.name||'?'):(ac?.name||''))+(tx.person?' · '+tx.person:'')));
-    left.appendChild(info);row.appendChild(left);
-    row.appendChild(el('div',{style:{fontSize:14,fontWeight:800,color:isIn?'#34d399':isX?MUT2:'#f87171',whiteSpace:'nowrap',marginLeft:8}},(isIn?'+':isX?'':'−')+eur(tx.amount)));
+    info.appendChild(el('div',{style:{fontSize:13,fontWeight:600,color:TXT,whiteSpace:'nowrap',
+      overflow:'hidden',textOverflow:'ellipsis'}},tx.desc||tp?.label));
+    const sub=el('div',{style:{fontSize:10,color:MUT,marginTop:1,whiteSpace:'nowrap',
+      overflow:'hidden',textOverflow:'ellipsis'}});
+    sub.textContent=(tx.date||'')+' · '+(isX?(fa?.name||'?')+'→'+(ta?.name||'?'):(ac?.name||''))+(tx.person?' · '+tx.person:'')+(tx.editedAt?' · ✏':'');
+    info.appendChild(sub);left.appendChild(info);
+    row.appendChild(left);
+    const right=el('div',{style:{display:'flex',alignItems:'center',gap:7,flexShrink:0,marginLeft:6}});
+    right.appendChild(el('div',{style:{fontSize:13,fontWeight:800,
+      color:isIn?'#34d399':isX?MUT2:'#f87171',whiteSpace:'nowrap'}},
+      (isIn?'+':isX?'':'−')+eur(tx.amount)));
+    if(editable){
+      const editBtn=el('button',{style:{width:28,height:28,borderRadius:8,background:'#1e293b',
+        display:'flex',alignItems:'center',justifyContent:'center',
+        border:'1px solid #334155',cursor:'pointer',flexShrink:0,touchAction:'manipulation',
+        fontFamily:'inherit',fontSize:13,color:MUT2}},'\u270f');
+      editBtn.addEventListener('click',e=>{e.stopPropagation();setState({txModal:tx});});
+      right.appendChild(editBtn);
+    }
+    row.appendChild(right);
     list.appendChild(row);
   });
   wrap.appendChild(list);
@@ -1999,68 +2218,10 @@ function renderSettings(){
   w.appendChild(driveWrap);
 
     /* --- NOTIFICATIONS --- */
-  w.appendChild(secTitle('Rappels quotidiens'));
+  w.appendChild(secTitle('Rappel par email'));
   const notifWrap=el('div',{style:{padding:'0 16px',display:'flex',flexDirection:'column',gap:12}});
 
-  /* ── Notification push card ── */
-  const perm=('Notification' in window)?Notification.permission:'unsupported';
-  const permBlocked=perm==='denied';
-  const permGranted=perm==='granted';
 
-  const pushCard=el('div',{style:{background:CARD,borderRadius:14,padding:'14px 16px',border:'1px solid '+BORDER}});
-
-  // Row: label + toggle
-  const pushRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}});
-  const pushLabel=el('div');
-  pushLabel.appendChild(el('div',{style:{fontSize:13,fontWeight:600,color:TXT}},'Notification push'));
-  pushLabel.appendChild(el('div',{style:{fontSize:11,color:MUT,marginTop:2}},'Rappel sur le t\u00e9l\u00e9phone m\u00eame si l\u2019app est ferm\u00e9e'));
-  pushRow.appendChild(pushLabel);
-  const pushToggle=mkToggle(settings.notifEnabled&&permGranted,()=>{
-    if(permBlocked){return;}
-    if(!settings.notifEnabled||!permGranted){
-      requestNotifPermission(ok=>{
-        if(ok){state.settings={...state.settings,notifEnabled:true};saveSettings(state.settings);render();}
-      });
-    }else{state.settings={...state.settings,notifEnabled:false};saveSettings(state.settings);render();}
-  });
-  pushRow.appendChild(pushToggle);
-  pushCard.appendChild(pushRow);
-
-  // Heure — toujours cliquable
-  const heureRow=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}});
-  heureRow.appendChild(el('div',{style:{fontSize:13,color:TXT}},'Heure du rappel'));
-  const ti=el('input',{type:'time',style:{background:BG,border:'1px solid '+BORDER,borderRadius:8,padding:'8px 12px',color:TXT,fontSize:14,outline:'none',touchAction:'manipulation'}});
-  ti.value=settings.notifTime||'20:00';
-  ti.addEventListener('change',e=>{state.settings={...state.settings,notifTime:e.target.value};saveSettings(state.settings);});
-  heureRow.appendChild(ti);
-  pushCard.appendChild(heureRow);
-
-  // Statut permission
-  const permBox=el('div',{style:{borderRadius:9,padding:'8px 11px',marginBottom:10,fontSize:11,lineHeight:1.5}});
-  if(perm==='unsupported'){
-    permBox.style.background='#1e1e2e';permBox.style.color=MUT;
-    permBox.textContent='Notifications non support\u00e9es sur ce navigateur.';
-  }else if(permGranted){
-    permBox.style.background='#022c22';permBox.style.color='#34d399';permBox.style.border='1px solid #064e3b';
-    permBox.textContent='\u2713 Permission accord\u00e9e';
-  }else if(permBlocked){
-    permBox.style.background='#3b1a1a';permBox.style.color='#fca5a5';permBox.style.border='1px solid #7f1d1d';
-    permBox.innerHTML='<b>Permission bloqu\u00e9e dans Chrome.</b><br>Pour d\u00e9bloquer :<br>'
-      +'1. Ouvre Chrome \u2192 les 3 points \u2192 Param\u00e8tres<br>'
-      +'2. Confidentialit\u00e9 \u2192 Param\u00e8tres des sites \u2192 Notifications<br>'
-      +'3. Trouve cette page dans "Bloqu\u00e9" \u2192 appuie dessus \u2192 Autoriser<br>'
-      +'4. Reviens et active le toggle ci-dessus';
-  }else{
-    permBox.style.background='#1a2744';permBox.style.color='#93c5fd';permBox.style.border='1px solid #1e3a5f';
-    permBox.textContent='Appuie sur le toggle pour demander la permission.';
-  }
-  pushCard.appendChild(permBox);
-
-  // Bouton test
-  const testBtn=el('button',{style:{background:permGranted&&settings.notifEnabled?'#1e3a5f':BG,border:'1px solid '+(permGranted&&settings.notifEnabled?'#3b82f6':BORDER),borderRadius:9,padding:'9px 14px',color:permGranted&&settings.notifEnabled?'#93c5fd':MUT,fontSize:12,cursor:permGranted&&settings.notifEnabled?'pointer':'default',width:'100%',touchAction:'manipulation',fontFamily:'inherit'}},'Envoyer une notification test');
-  testBtn.addEventListener('click',()=>{if(permGranted&&settings.notifEnabled)sendTestNotif();});
-  pushCard.appendChild(testBtn);
-  notifWrap.appendChild(pushCard);
 
   /* ── Email reminder card ── */
   const emailCard=el('div',{style:{background:CARD,borderRadius:14,padding:'14px 16px',border:'1px solid '+BORDER}});
@@ -2087,7 +2248,7 @@ function renderSettings(){
     el('div',{style:{fontSize:10,color:MUT,marginTop:2}},'Synchronise pour appliquer le changement')
   ]));
   const emailTi=el('input',{type:'time',style:{background:BG,border:'1px solid '+BORDER,borderRadius:8,padding:'8px 12px',color:TXT,fontSize:14,outline:'none',touchAction:'manipulation'}});
-  emailTi.value=settings.emailTime||'08:00';
+  emailTi.value=settings.emailTime||'21:00';
   emailTi.addEventListener('change',e=>{state.settings={...state.settings,emailTime:e.target.value};saveSettings(state.settings);});
   emailTimeRow.appendChild(emailTi);
   emailCard.appendChild(emailTimeRow);
@@ -2187,7 +2348,6 @@ fixViewport();
 window.addEventListener('resize', fixViewport);
 window.addEventListener('orientationchange', function(){ setTimeout(fixViewport, 150); });
 init();
-scheduleNotifCheck();
 // Init Google Auth quand la librairie est prête
 window.addEventListener('load',()=>{
   setTimeout(initGoogleAuth,500);
